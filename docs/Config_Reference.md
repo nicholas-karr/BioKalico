@@ -4282,6 +4282,38 @@ pin:
 #   See the "output_pin" section for the definition of these parameters.
 ```
 
+### [pulse_pin]
+
+Run-time configurable pulse-train output pins (one may define any
+number of sections with a "pulse_pin" prefix). Pins configured here
+will be setup as output pins and one may start/stop pulse trains at
+run-time using `START_PULSE_PIN` and `STOP_PULSE_PIN` extended
+[g-code commands](G-Codes.md#pulse_pin).
+
+```
+[pulse_pin my_pulse]
+pin:
+#   The pin to configure as an output. This parameter must be provided.
+#value: 0
+#   The initial logical value set on the pin during MCU configuration.
+#   Valid values are 0 or 1.
+#shutdown_value: 0
+#   The logical value to set on an MCU shutdown event and when pulse
+#   trains stop. Valid values are 0 or 1.
+#pulse_width_us: 100
+#   Default pulse width in microseconds. Must be at least 100.
+#triggers_per_sec: 1.0
+#   Default pulse rate (Hz).
+#   Pulse duty cycle is limited to 10% at run-time
+#   (pulse_width_us * triggers_per_sec <= 100000).
+#trigger_count: 1
+#   Default number of pulses in a burst. Set to 0 for continuous pulses
+#   until `STOP_PULSE_PIN`.
+#max_triggers_per_sec:
+#   Optional override for the runtime trigger-rate safety cap. If not
+#   set, a conservative per-MCU value is computed from MCU clock speed.
+```
+
 ### [pwm_cycle_time]
 
 Run-time configurable output pins with dynamic pwm cycle timing (one

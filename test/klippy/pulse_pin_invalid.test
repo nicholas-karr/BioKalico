@@ -1,0 +1,6 @@
+# Test case for pulse_pin invalid command
+SHOULD_FAIL
+CONFIG pulse_pin.cfg
+DICTIONARY atmega2560.dict
+
+START_PULSE_PIN PIN=test_pulse_pin PULSE_WIDTH_US=99 TRIGGERS_PER_SEC=10 TRIGGER_COUNT=1

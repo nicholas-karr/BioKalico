@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260415: Added a new `[pulse_pin]` module with `START_PULSE_PIN`
+and `STOP_PULSE_PIN` commands for configurable pulse trains. This is a
+new feature and does not change existing `[output_pin]`, `[pwm_tool]`,
+or `SET_PIN` behavior.
+
 20260121: Kalico now uses automatic monthly release tags in the format
 `vYYYY.MM.NN` (e.g., `v2026.01.00`). Users can configure Moonraker to track
 stable monthly releases instead of the latest commits. See

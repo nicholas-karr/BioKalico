@@ -29,7 +29,54 @@ enum {
     DF_ON=1<<0, DF_TOGGLING=1<<1, DF_CHECK_END=1<<2, DF_DEFAULT_ON=1<<4
 };
 
+struct pulse_out_s {
+    struct timer timer;
+    struct gpio_out pin;
+    uint32_t pulse_width, off_duration, remaining;
+    uint8_t flags;
+    uint8_t pulse_value, default_value;
+};
+
+enum {
+    PF_ACTIVE=1<<0, PF_PIN_ON=1<<1, PF_INFINITE=1<<2
+};
+
 static uint_fast8_t digital_load_event(struct timer *timer);
+
+// Scheduled pulse train event
+static uint_fast8_t
+pulse_event(struct timer *timer)
+{
+    struct pulse_out_s *p = container_of(timer, struct pulse_out_s, timer);
+    uint8_t flags = p->flags;
+    if (!(flags & PF_ACTIVE))
+        return SF_DONE;
+    if (!(flags & PF_PIN_ON)) {
+        gpio_out_write(p->pin, p->pulse_value);
+        p->flags = flags | PF_PIN_ON;
+        p->timer.waketime += p->pulse_width;
+        return SF_RESCHEDULE;
+    }
+
+    gpio_out_write(p->pin, p->default_value);
+    flags &= ~PF_PIN_ON;
+    if (!(flags & PF_INFINITE)) {
+        uint32_t remaining = p->remaining;
+        if (!remaining) {
+            p->flags = flags & ~PF_ACTIVE;
+            return SF_DONE;
+        }
+        remaining--;
+        p->remaining = remaining;
+        if (!remaining) {
+            p->flags = flags & ~PF_ACTIVE;
+            return SF_DONE;
+        }
+    }
+    p->flags = flags;
+    p->timer.waketime += p->off_duration;
+    return SF_RESCHEDULE;
+}
 
 // Software PWM toggle event
 static uint_fast8_t
@@ -175,6 +222,61 @@ DECL_COMMAND(command_queue_digital_out,
              "queue_digital_out oid=%c clock=%u on_ticks=%u");
 
 void
+command_config_pulse_out(uint32_t *args)
+{
+    struct gpio_out pin = gpio_out_setup(args[1], !!args[3]);
+    struct pulse_out_s *p = oid_alloc(args[0], command_config_pulse_out
+                                      , sizeof(*p));
+    p->pin = pin;
+    p->pulse_value = !!args[2];
+    p->default_value = !!args[3];
+    p->flags = 0;
+}
+DECL_COMMAND(command_config_pulse_out,
+             "config_pulse_out oid=%c pin=%u value=%c default_value=%c");
+
+void
+command_start_pulse_out(uint32_t *args)
+{
+    struct pulse_out_s *p = oid_lookup(args[0], command_config_pulse_out);
+    uint32_t pulse_width = args[2], period = args[3], count = args[4];
+    if (pulse_width < timer_from_us(100))
+        shutdown("Pulse width below minimum");
+    if (period <= pulse_width)
+        shutdown("Pulse period must be greater than pulse width");
+    if (pulse_width > period / 10)
+        shutdown("Pulse duty cycle exceeds 10%");
+
+    irq_disable();
+    sched_del_timer(&p->timer);
+    gpio_out_write(p->pin, p->default_value);
+    p->pulse_width = pulse_width;
+    p->off_duration = period - pulse_width;
+    p->remaining = count;
+    p->flags = PF_ACTIVE | (count ? 0 : PF_INFINITE);
+    p->timer.waketime = args[1];
+    p->timer.func = pulse_event;
+    sched_add_timer(&p->timer);
+    irq_enable();
+}
+DECL_COMMAND(command_start_pulse_out,
+             "start_pulse_out oid=%c clock=%u width_ticks=%u"
+             " period_ticks=%u count=%u");
+
+void
+command_stop_pulse_out(uint32_t *args)
+{
+    struct pulse_out_s *p = oid_lookup(args[0], command_config_pulse_out);
+    irq_disable();
+    sched_del_timer(&p->timer);
+    p->flags = 0;
+    p->remaining = 0;
+    gpio_out_write(p->pin, p->default_value);
+    irq_enable();
+}
+DECL_COMMAND(command_stop_pulse_out, "stop_pulse_out oid=%c");
+
+void
 command_update_digital_out(uint32_t *args)
 {
     struct digital_out_s *d = oid_lookup(args[0], command_config_digital_out);
@@ -206,6 +308,19 @@ digital_out_shutdown(void)
     }
 }
 DECL_SHUTDOWN(digital_out_shutdown);
+
+void
+pulse_out_shutdown(void)
+{
+    uint8_t i;
+    struct pulse_out_s *p;
+    foreach_oid(i, p, command_config_pulse_out) {
+        gpio_out_write(p->pin, p->default_value);
+        p->flags = 0;
+        p->remaining = 0;
+    }
+}
+DECL_SHUTDOWN(pulse_out_shutdown);
 
 void
 command_set_digital_out(uint32_t *args)

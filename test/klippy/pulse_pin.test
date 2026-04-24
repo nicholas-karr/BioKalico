@@ -1,0 +1,14 @@
+# Test case for pulse_pin
+CONFIG pulse_pin.cfg
+DICTIONARY atmega2560.dict
+
+# Finite bursts
+START_PULSE_PIN PIN=test_pulse_pin PULSE_WIDTH_US=100 TRIGGERS_PER_SEC=10 TRIGGER_COUNT=1
+START_PULSE_PIN PIN=test_pulse_pin PULSE_WIDTH_US=350 TRIGGERS_PER_SEC=15 TRIGGER_COUNT=8
+
+# Default values from config section
+START_PULSE_PIN PIN=test_pulse_pin
+
+# Continuous mode and explicit stop
+START_PULSE_PIN PIN=test_pulse_pin PULSE_WIDTH_US=150 TRIGGERS_PER_SEC=8 TRIGGER_COUNT=0
+STOP_PULSE_PIN PIN=test_pulse_pin

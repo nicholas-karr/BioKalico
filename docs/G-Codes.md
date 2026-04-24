@@ -1230,6 +1230,25 @@ parsed as Python literals). If TEMPLATE is an empty string then this
 command will clear any previous template assigned to the pin (one can
 then use `SET_PIN` commands to manage the values directly).
 
+### [pulse_pin]
+
+The following commands are available when a
+[pulse_pin config section](Config_Reference.md#pulse_pin) is enabled.
+
+#### START_PULSE_PIN
+`START_PULSE_PIN PIN=config_name [PULSE_WIDTH_US=<usec>] [TRIGGERS_PER_SEC=<hz>] [TRIGGER_COUNT=<count>]`:
+Start (or restart) a pulse train on the target pin. The pulse width
+must be at least 100 microseconds. The configured pulse duty cycle
+must not exceed 10% (high time / period <= 0.10). `TRIGGER_COUNT`
+controls the number of pulses in the burst; when it reaches zero the
+pin is returned to its `shutdown_value`. If `TRIGGER_COUNT=0`, pulses
+continue until `STOP_PULSE_PIN` is issued.
+
+#### STOP_PULSE_PIN
+`STOP_PULSE_PIN PIN=config_name`:
+Immediately stop an active pulse train and return the pin to its
+`shutdown_value`.
+
 ### [palette2]
 
 The following commands are available when the
