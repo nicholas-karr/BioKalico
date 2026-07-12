@@ -1,0 +1,157 @@
+# Reference copy of the nginx config `scripts/biokalico-installer.sh`'s
+# install_mainsail_nginx() writes automatically during `biokalico-installer.sh
+# install` (see scripts/biokalico-installer.sh for the source of truth - this file
+# is a manual-reference copy for anyone bringing a host up without that
+# script, e.g. by hand or from a different installer). Three separate
+# files, each installed at the path in its own header comment below.
+# Replace ~/mainsail with your actual Mainsail install directory (the
+# script uses $MAINSAIL_DIR, which defaults to ~/mainsail).
+
+# ---- /etc/nginx/conf.d/common_vars.conf ----
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+# ---- /etc/nginx/conf.d/upstreams.conf ----
+
+upstream apiserver {
+    ip_hash;
+    server 127.0.0.1:7125;
+}
+
+upstream mjpgstreamer1 {
+    ip_hash;
+    server 127.0.0.1:8080;
+}
+
+upstream mjpgstreamer2 {
+    ip_hash;
+    server 127.0.0.1:8081;
+}
+
+upstream mjpgstreamer3 {
+    ip_hash;
+    server 127.0.0.1:8082;
+}
+
+upstream mjpgstreamer4 {
+    ip_hash;
+    server 127.0.0.1:8083;
+}
+
+# ---- /etc/nginx/sites-available/mainsail ----
+# (also symlink this into /etc/nginx/sites-enabled/mainsail, and remove
+# /etc/nginx/sites-enabled/default if present, to avoid a default-server
+# conflict on port 80)
+
+server {
+    listen 80;
+    # uncomment the next line to activate IPv6
+    # listen [::]:80;
+
+    access_log /var/log/nginx/mainsail-access.log;
+    error_log /var/log/nginx/mainsail-error.log;
+
+    # disable this section on smaller hardware like a pi zero
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_proxied expired no-cache no-store private auth;
+    gzip_comp_level 4;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_types text/plain text/css text/xml text/javascript application/javascript application/x-javascript application/json application/xml;
+
+    # web_path from mainsail static files
+    root ~/mainsail;
+
+    index index.html;
+    server_name _;
+
+    # disable max upload size checks
+    client_max_body_size 0;
+
+    # disable proxy request buffering
+    proxy_request_buffering off;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    # Injected panel scripts (biokalico_extras/mainsail/*.js, e.g.
+    # firmware-panel.js, projector-panel.js) live at a stable root-level
+    # URL with no cache-busting hash in the filename - unlike Mainsail's own
+    # /assets/*.js build output, which can be cached forever because a
+    # content change always gets a new hashed filename. Without this,
+    # updates get stuck behind any caching proxy in front of this host
+    # (e.g. Cloudflare) for as long as its default static-asset cache TTL,
+    # since nginx would otherwise send no explicit Cache-Control for these
+    # at all. Matches any root-level .js file, not just the two above, so
+    # future panel scripts don't need another edit here.
+    location ~ ^/[^/]+\.js$ {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    location /websocket {
+        proxy_pass http://apiserver/websocket;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400;
+    }
+
+    location ~ ^/(printer|api|access|machine|server)/ {
+        proxy_pass http://apiserver$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Scheme $scheme;
+    }
+
+    location /webcam/ {
+        postpone_output 0;
+        proxy_buffering off;
+        proxy_ignore_headers X-Accel-Buffering;
+        access_log off;
+        error_log off;
+        proxy_pass http://mjpgstreamer1/;
+    }
+
+    location /webcam2/ {
+        postpone_output 0;
+        proxy_buffering off;
+        proxy_ignore_headers X-Accel-Buffering;
+        access_log off;
+        error_log off;
+        proxy_pass http://mjpgstreamer2/;
+    }
+
+    location /webcam3/ {
+        postpone_output 0;
+        proxy_buffering off;
+        proxy_ignore_headers X-Accel-Buffering;
+        access_log off;
+        error_log off;
+        proxy_pass http://mjpgstreamer3/;
+    }
+
+    location /webcam4/ {
+        postpone_output 0;
+        proxy_buffering off;
+        proxy_ignore_headers X-Accel-Buffering;
+        access_log off;
+        error_log off;
+        proxy_pass http://mjpgstreamer4/;
+    }
+}

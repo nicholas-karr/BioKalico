@@ -1,0 +1,40 @@
+# Image Display Server Configuration
+
+# Network settings
+# The protocol has no authentication, so anything that can reach this port can
+# command the projector and hand it arbitrary local file paths to read. Default
+# to loopback-only; only widen to '0.0.0.0' if klippy/moonraker run on a
+# different host than this server and need to reach it over the LAN, and you
+# trust everything on that network.
+host: '127.0.0.1'  # Listen on localhost only; set to '0.0.0.0' to listen on all interfaces
+port: 5555          # TCP port number
+
+# Display settings
+# List your current monitors with "python image-display.py --enum-monitors"
+# If monitor_index is omitted, the server tries to auto-pick a likely projector.
+monitor_auto_detect: true
+# monitor_index: 1  # Force a specific monitor index when needed
+# monitor_size: [1920, 1080]  # Size of the monitor in pixels (width, height)
+# monitor_position: [0, 0]  # Position of the monitor (x, y)
+
+# Projector power control (required unless projector_control is set to false)
+# Serial adapter connected to the projector's RS232 power port.
+projector_device: '/dev/ttyUSB0'
+# projector_control: false  # uncomment to disable serial power control entirely
+
+# Video pipeline settings
+require_exact_resolution: true
+allowed_aspect_ratios:
+  - [16, 9]
+  - [4, 3]
+  - [1, 1]
+video_cache_dir: '~/printer_data/cache/bioslicer-sla-video-cache'
+
+# ffmpeg hardware acceleration settings
+# Examples:
+#   NVIDIA: ffmpeg_hwaccel: 'cuda', ffmpeg_hw_decoder: 'hevc_cuvid'
+#   Intel:  ffmpeg_hwaccel: 'vaapi', ffmpeg_hw_decoder: null
+#   AMD:    ffmpeg_hwaccel: 'vaapi', ffmpeg_hw_decoder: null
+#   Pi 4:   ffmpeg_hwaccel: 'auto', ffmpeg_hw_decoder: null
+ffmpeg_hwaccel: 'auto'
+ffmpeg_hw_decoder: null

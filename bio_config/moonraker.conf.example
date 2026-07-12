@@ -1,0 +1,62 @@
+# Template moonraker.conf for a BioKalico host. Copy this to
+# ~/printer_data/config/moonraker.conf and adjust as needed - see
+# QUICKSTART.md for the full walkthrough.
+#
+# The three [include ...] lines near the bottom are what make this a
+# "BioKalico" moonraker.conf rather than a stock Moonraker one: they pull in
+# the SLA projector power buttons, the $HOME config-file root, and the
+# firmware build/flash panel backend, all of which live in this repo's
+# biokalico_extras/moonraker/ rather than in printer_data (see
+# biokalico_extras/README.md for what each one does).
+
+[server]
+host: 0.0.0.0
+port: 7125
+klippy_uds_address: ~/printer_data/comms/klippy.sock
+
+[authorization]
+trusted_clients:
+    192.168.0.0/16
+    10.0.0.0/8
+    127.0.0.0/8
+    169.254.0.0/16
+    172.16.0.0/12
+    FC00::/7
+    FE80::/10
+    ::1/128
+cors_domains:
+    *.lan
+    *.local
+    *://localhost
+    *://localhost:*
+    *://my.mainsail.xyz
+    *://app.fluidd.xyz
+
+[octoprint_compat]
+
+[history]
+
+[update_manager]
+channel: dev
+refresh_interval: 168
+
+# Single entry for the whole BioKalico stack: Moonraker git-pulls this repo,
+# then runs scripts/biokalico-installer.sh (install_script), which syncs Moonraker,
+# Mainsail, mainsail-config, and crowsnest in turn. See scripts/biokalico-installer.sh
+# and biokalico_extras/README.md.
+[update_manager klipper]
+type: git_repo
+path: ~/klipper
+origin: https://github.com/nicholas-karr/BioKalico.git
+primary_branch: main
+managed_services: klipper
+install_script: scripts/biokalico-installer.sh
+
+# SLA Projector power buttons + status sensor, maintained in the klipper repo.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_projector.conf]
+
+# Registers $HOME as a selectable root in Mainsail's Config Files page.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_home_root.conf]
+
+# Firmware build/flash panel backend - see biokalico_extras/firmware_flash.md.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_firmware_build.conf]

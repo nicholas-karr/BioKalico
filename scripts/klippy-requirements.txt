@@ -38,3 +38,10 @@ typing-extensions==4.13.2
     # via python-can
 wrapt==1.17.2
     # via python-can
+
+# Manually maintained (not part of the uv-managed kalico deps above): needed
+# by klippy/extras/image_display.py and scripts/sla/ for the SLA projector
+# pipeline.
+PyYAML>=6.0
+pyglet>=2.0
+Pillow>=10.0

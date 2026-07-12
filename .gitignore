@@ -1,5 +1,6 @@
 # development
 out
+firmware_builds/
 *.so
 *.pyc
 __pycache__/
@@ -14,6 +15,7 @@ _test_.*
 klippy/plugins/*
 !klippy/plugins/__init__.py
 .vscode
+.claude
 .idea/*
 
 # docs

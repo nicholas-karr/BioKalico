@@ -1,18 +1,71 @@
-<p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/logo/kalico-big.png" alt="Kalico Logo"></a></p>
+# BioKalico
 
-[![Action Status](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml)
+BioKalico is a fork of [Kalico](https://github.com/KalicoCrew/kalico) (itself
+a community-maintained fork of [Klipper](https://github.com/Klipper3d/klipper))
+for hybrid FFF/SLA bioprinting: multi-material toolchanging, projector-driven
+resin exposure, and syringe/paste extrusion, on top of the FFF printer
+firmware every Klipper install starts with.
 
-# Welcome to the Kalico project!
+Klipper splits the printing job between a regular computer (usually a
+Raspberry Pi, running "Klippy", the Python host software) and the printer's
+own micro-controller. The host handles trajectory planning and math in
+software; the micro-controller just fires precisely-timed step pulses, so
+even a cheap MCU can drive motion accurately.
 
-This is a community-maintained fork of the [Klipper](https://github.com/Klipper3d/klipper) firmware.
+Kalico maintains features upstream Klipper is too conservative to merge:
+features that could damage a printer or its surroundings if misconfigured.
 
-Our goal is to support features and behavior that could be "risky" if used incorrectly.
+## Quick Start
 
-If I want my printer to light itself on fire, I should be able to make my printer light itself on fire.
+New to this? [QUICKSTART.md](QUICKSTART.md) walks through everything from
+a blank Raspberry Pi (or laptop) to a running, remotely-accessible printer.
+No prior Linux or SSH experience assumed.
 
-See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html) for more information on *some* of the differences from Klipper.
+## Documentation
 
-## Features merged into the main branch:
+- [biokalico_extras/README.md](biokalico_extras/README.md): host setup with
+  `scripts/biokalico-installer.sh`, and how the Moonraker/Mainsail patches
+  (projector power buttons, `$HOME` config root, firmware build panel) get
+  deployed from the files in `biokalico_extras/`.
+- [scripts/sla/README.md](scripts/sla/README.md): the TCP display server
+  that drives the projector: setup, systemd service, and the G-code command
+  reference (`SLA_SHOW_FRAME`, `SLA_LOAD_GCODE_VIDEOS`, etc.).
+- [klippy/extras/VENDORED.md](klippy/extras/VENDORED.md): the
+  `toolchanger`/`tool`/`tool_probe` extras vendored in from
+  [klipper-toolchanger](https://github.com/viesturz/klipper-toolchanger).
+- [bio_config/](bio_config/): `printer.cfg` templates for BioTrident and
+  Printess.
+- Firmware build & flash panel: see below.
+
+## Printer service management
+
+`~/klipper/scripts/printer-services.sh` restarts every host-side service this
+printer stack depends on (klipper, moonraker, crowsnest, nginx/mainsail, and
+the SLA image-display server) plus the MCU firmware itself, and/or tails all
+of their logs together in one interleaved stream:
+
+```bash
+~/klipper/scripts/printer-services.sh --restart --logs
+```
+
+Both flags default to false; run with no arguments (or `-h`/`--help`) to see
+full usage.
+
+## Firmware build & flash panel
+
+A "Firmware" card in Mainsail's Settings page builds and flashes this
+printer's micro-controllers over the bootloader, no button presses needed,
+using per-board build presets stored in `printer.cfg`. See
+[biokalico_extras/firmware_flash.md](biokalico_extras/firmware_flash.md).
+
+---
+
+## Inherited Klipper/Kalico features
+
+BioKalico tracks Kalico's `main` branch, so it carries everything Kalico
+adds on top of upstream Klipper. See the [Kalico Additions
+document](https://docs.kalico.gg/Kalico_Additions.html) for Kalico's own
+full list; here's what that means concretely for this fork:
 
 - [core: no Python2 tests; no PRU boards](https://github.com/KalicoCrew/kalico/pull/39)
 
@@ -144,112 +197,4 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [extruder: cold_extrude](https://github.com/KalicoCrew/kalico/pull/750)
 
-If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
-and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
-
-- [extruder/pa: do not smooth base extruder position, only advance](https://github.com/KalicoCrew/kalico/pull/266)
-
-- [dmbutyugin's advanced-features branch - Pull Request #262](https://github.com/KalicoCrew/kalico/pull/262)
-  - stepper: high precision stepping protocol
-  - extruder: sync extruder motion with input shaper
-  - extruder: new print_pa_tower utility
-  - input_shaper: smooth input shapers
-  - input_shaper: new print_ringing_tower utility
-
-## Switch to Kalico
-
-> [!NOTE]
-> Any add-on modules you are using will need to be reinstalled after switching to Kalico. This includes things like Beacon support, led-effect, etc.
->
-> Any data in ~/printer_data such as printer configs and macros will be unaffected.
-
-### Option 1. Manually clone the repository
-
-If desired, make a backup copy of your existing Klipper installation by running:
-
-```bash
-mv ~/klipper ~/klipper_old
-```
-
-Then clone the Kalico repository and restart the `klipper` service:
-
-```bash
-git clone https://github.com/KalicoCrew/kalico.git ~/klipper
-sudo systemctl restart klipper
-```
-
-It might happen that your python environment needs to be updated. If that is the case, run:
-
-```bash
-~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
-```
-
-### Option 2. Using KIAUH
-
-For users that are not comfortable using Git directly, [KIAUH v6](https://github.com/dw-0/kiauh) is able to use custom repositories.
-
-To do this, add the Kalico repo to KIAUH's custom repository config depending on your KIAUH version:
-
-#### Setup Kalico as repository in KIAUH v6
-
-- `cd ~/kiauh`
-- `cp default.kiauh.cfg kiauh.cfg`
-- `nano kiauh.cfg`
-- add `https://github.com/KalicoCrew/kalico, main` for the main branch
-
-    or `https://github.com/KalicoCrew/kalico, bleeding-edge-v2` for the bleeding edge branch
-- CTRL-X to save and exit
-
-From the KIAUH menu select:
-
--   [S] Settings
--   1\) Switch Klipper source repository
-
--   Select Kalico from the list
-
-#### Setup Kalico as repository in KIAUH v4
-
-- Add the custom repository to your `klipper_repos.txt` in the `~kiauh` directory
-- `echo "https://github.com/KalicoCrew/kalico,main" >> ~/kiauh/klipper_repos.txt` for the main branch
-
-  or `echo "https://github.com/KalicoCrew/kalico,bleeding-edge-v2" >> ~/kiauh/klipper_repos.txt` for the bleeding edge branch
-
-From the KIAUH menu select:
-
--   [6] Settings
--   1\) Set custom Klipper repository
-
--   Select Kalico from the list
-
-
-*Repository changes will not persist across KIAUH versions.*
-
-### Option 3. Adding a git-remote to the existing installation
-
-It allows you to switch back to mainline Klipper at any time via a `git checkout upstream_main`
-
-```bash
-cd ~/klipper
-git remote add kalico https://github.com/KalicoCrew/kalico.git
-git fetch kalico
-git checkout -b upstream-main origin/master
-git branch -D master
-git checkout -b main kalico/main
-sudo systemctl restart klipper
-sudo systemctl restart moonraker
-```
-
----
-
-Kalico is a 3d-Printer firmware. It combines the power of a general
-purpose computer with one or more micro-controllers. See the
-[features document](https://docs.kalico.gg/Features.html) for more
-information on why you should use Kalico.
-
-To begin using Kalico start by
-[installing](https://docs.kalico.gg/Installation.html) it.
-
-Kalico is Free Software. See the [license](COPYING) or read the
-[documentation](https://docs.kalico.gg/Overview.html).
-
-[![Join me on Discord](https://discord.com/api/guilds/1297243471442214913/widget.png?style=banner2)](https://kalico.gg/discord)
+This project is licensed under the [GPLv3 license](COPYING).
