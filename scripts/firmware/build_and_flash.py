@@ -35,7 +35,9 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+REPO_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
 BUILD_ROOT = os.path.join(REPO_ROOT, "firmware_builds")
 PRESET_DIR = os.path.join(REPO_ROOT, "biokalico_extras", "firmware_presets")
 DEFAULT_PRINTER_CFG = os.path.expanduser("~/printer_data/config/printer.cfg")
@@ -110,7 +112,10 @@ def _handle_signal(signum, frame):
     raise Interrupted("received signal %d" % signum)
 
 
-# ---- minimal printer.cfg reader ------------------------------------------
+######################################################################
+# Minimal printer.cfg reader
+######################################################################
+
 # Only understands what firmware_build sections need: [section] headers,
 # 'key: value' / 'key = value' lines, '#'/';' comments, and non-glob
 # [include ...] directives (resolved relative to the including file).
@@ -135,11 +140,17 @@ def _parse_cfg_file(path, sections, seen_files):
         return
     seen_files.add(path)
     cur = None
-    multiline_key = None  # key currently accumulating indented continuation lines
+    multiline_key = (
+        None  # key currently accumulating indented continuation lines
+    )
     with open(path) as f:
         for raw in f:
             stripped = raw.strip()
-            if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            if (
+                not stripped
+                or stripped.startswith("#")
+                or stripped.startswith(";")
+            ):
                 continue
             if raw[:1].isspace():
                 # Continuation line (Klipper's multi-line value syntax: any
@@ -237,7 +248,9 @@ def resolve_targets(sections):
     return targets
 
 
-# ---- build / flash ---------------------------------------------------------
+######################################################################
+# Build and flash
+######################################################################
 
 
 # Compiling two targets in parallel can spawn up to 2x nproc compiler
@@ -279,7 +292,9 @@ def _run(cmd, cwd, env, target, phase, nice=True):
         with _active_procs_lock:
             _active_procs.discard(proc)
     if ret != 0:
-        raise RuntimeError("command failed (exit %d): %s" % (ret, " ".join(cmd)))
+        raise RuntimeError(
+            "command failed (exit %d): %s" % (ret, " ".join(cmd))
+        )
 
 
 def build_target(name, preset, overrides=""):
@@ -375,7 +390,9 @@ def write_last_flashed(name, preset, overrides, config_path):
     # Explicitly "unknown" (not a silently empty string) on failure, so a
     # broken git invocation is visibly distinguishable in the UI from a
     # successful run.
-    commit = commit_proc.stdout.strip() if commit_proc.returncode == 0 else "unknown"
+    commit = (
+        commit_proc.stdout.strip() if commit_proc.returncode == 0 else "unknown"
+    )
     data = {
         "git_commit": commit,
         "source_fingerprint": source_fingerprint(preset, overrides),
@@ -396,7 +413,11 @@ def _systemctl(action, target):
             target,
             "flashing",
             "warning: systemctl %s klipper failed (exit %d): %s"
-            % (action, result.returncode, (result.stderr or result.stdout).strip()),
+            % (
+                action,
+                result.returncode,
+                (result.stderr or result.stdout).strip(),
+            ),
         )
         return False
     return True
@@ -461,7 +482,9 @@ def flash_target(name, preset, overrides, device):
         _wait_for_klippy_ready(name)
 
 
-# ---- orchestration ----------------------------------------------------------
+######################################################################
+# Orchestration
+######################################################################
 
 
 def main():
@@ -505,7 +528,10 @@ def main():
     with ThreadPoolExecutor(max_workers=len(names)) as pool:
         futures = {
             pool.submit(
-                build_target, n, all_targets[n]["preset"], all_targets[n]["overrides"]
+                build_target,
+                n,
+                all_targets[n]["preset"],
+                all_targets[n]["overrides"],
             ): n
             for n in names
         }

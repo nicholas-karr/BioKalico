@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +37,9 @@ def _safe_name_for_file(name: str) -> str:
     return f"{sanitized}_{suffix}"
 
 
-def extract_videos_from_gcode(gcode_path: str, output_dir: str) -> Dict[str, str]:
+def extract_videos_from_gcode(
+    gcode_path: str, output_dir: str
+) -> Dict[str, str]:
     """Extract embedded videos and references from G-code comments.
 
     Supported comment protocols:
@@ -59,11 +60,15 @@ def extract_videos_from_gcode(gcode_path: str, output_dir: str) -> Dict[str, str
     begin_re_old = re.compile(
         r"^;\s*bioslicer_sla_video_begin\s+name=(\S+)\s+extruder=(\d+)\s+bytes=(\d+)\s*$"
     )
-    data_re = re.compile(r"^;\s*bioslicer_sla_video\s+(?:data\s+)?([A-Za-z0-9+/=]+)\s*$")
+    data_re = re.compile(
+        r"^;\s*bioslicer_sla_video\s+(?:data\s+)?([A-Za-z0-9+/=]+)\s*$"
+    )
     data_re_old = re.compile(r"^;\s+([A-Za-z0-9+/=]+)\s*$")
     end_re = re.compile(r"^;\s*bioslicer_sla_video\s+end\s+name=(\S+)\s*$")
     end_re_old = re.compile(r"^;\s*bioslicer_sla_video_end\s*$")
-    ref_path_re = re.compile(r"^;\s*bioslicer_sla_video\s+ref\s+name=(\S+)\s+extruder=(\d+)\s+path=(.+)$")
+    ref_path_re = re.compile(
+        r"^;\s*bioslicer_sla_video\s+ref\s+name=(\S+)\s+extruder=(\d+)\s+path=(.+)$"
+    )
     ref_path_b64_re = re.compile(
         r"^;\s*bioslicer_sla_video\s+ref\s+name=(\S+)\s+extruder=(\d+)\s+path_b64=(\S+)\s*$"
     )
@@ -132,7 +137,9 @@ def extract_videos_from_gcode(gcode_path: str, output_dir: str) -> Dict[str, str
                         f"Mismatched embedded video terminator: expected {active_name}, got {end_name}."
                     )
 
-                payload = base64.b64decode("".join(active_chunks).encode("ascii"), validate=True)
+                payload = base64.b64decode(
+                    "".join(active_chunks).encode("ascii"), validate=True
+                )
                 if len(payload) != active_expected_bytes:
                     raise RuntimeError(
                         f"Embedded payload length mismatch for {active_name}: "
@@ -146,7 +153,9 @@ def extract_videos_from_gcode(gcode_path: str, output_dir: str) -> Dict[str, str
                         f"expected {active_expected_sha256}, got {digest}."
                     )
 
-                output_path = output_base / f"{_safe_name_for_file(active_name)}.mkv"
+                output_path = (
+                    output_base / f"{_safe_name_for_file(active_name)}.mkv"
+                )
                 with open(output_path, "wb") as video_handle:
                     video_handle.write(payload)
 
@@ -159,14 +168,18 @@ def extract_videos_from_gcode(gcode_path: str, output_dir: str) -> Dict[str, str
                 continue
 
             if active_old_format and end_re_old.match(line):
-                payload = base64.b64decode("".join(active_chunks).encode("ascii"), validate=True)
+                payload = base64.b64decode(
+                    "".join(active_chunks).encode("ascii"), validate=True
+                )
                 if len(payload) != active_expected_bytes:
                     raise RuntimeError(
                         f"Embedded payload length mismatch for {active_name}: "
                         f"expected {active_expected_bytes}, got {len(payload)}."
                     )
 
-                output_path = output_base / f"{_safe_name_for_file(active_name)}.mkv"
+                output_path = (
+                    output_base / f"{_safe_name_for_file(active_name)}.mkv"
+                )
                 with open(output_path, "wb") as video_handle:
                     video_handle.write(payload)
 
@@ -241,14 +254,18 @@ class FFmpegVideoStream:
             path,
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
         except subprocess.TimeoutExpired:
             # This runs while the caller (VideoRegistry.load_video) holds the
             # registry's shared lock, so a hung ffprobe must fail cleanly for
             # this one video rather than blocking the lock indefinitely.
             raise RuntimeError(f"ffprobe timed out probing {path}")
         if proc.returncode != 0:
-            raise RuntimeError(f"ffprobe failed for {path}: {proc.stderr.strip()}")
+            raise RuntimeError(
+                f"ffprobe failed for {path}: {proc.stderr.strip()}"
+            )
 
         payload = json.loads(proc.stdout)
         streams = payload.get("streams", [])
@@ -259,7 +276,9 @@ class FFmpegVideoStream:
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         if width <= 0 or height <= 0:
-            raise RuntimeError(f"Invalid video dimensions in {path}: {width}x{height}")
+            raise RuntimeError(
+                f"Invalid video dimensions in {path}: {width}x{height}"
+            )
 
         fps = 0.0
         avg_frame_rate = stream.get("avg_frame_rate", "0/1")
@@ -334,20 +353,24 @@ class FFmpegVideoStream:
         if start_frame > 0:
             cmd.extend(["-vf", f"select='gte(n,{start_frame})'"])
 
-        cmd.extend([
-            "-an",
-            "-sn",
-            "-dn",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-vsync",
-            "0",
-            "-",
-        ])
+        cmd.extend(
+            [
+                "-an",
+                "-sn",
+                "-dn",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgba",
+                "-vsync",
+                "0",
+                "-",
+            ]
+        )
 
-        logger.info("Starting ffmpeg stream for %s at frame %d", self.name, start_frame)
+        logger.info(
+            "Starting ffmpeg stream for %s at frame %d", self.name, start_frame
+        )
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -373,7 +396,9 @@ class FFmpegVideoStream:
             stderr_tail = ""
             if self.process.stderr is not None:
                 try:
-                    stderr_tail = self.process.stderr.read().decode("utf-8", errors="replace")
+                    stderr_tail = self.process.stderr.read().decode(
+                        "utf-8", errors="replace"
+                    )
                 except Exception:
                     stderr_tail = ""
             raise RuntimeError(

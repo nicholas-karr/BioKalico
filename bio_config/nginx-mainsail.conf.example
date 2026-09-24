@@ -7,14 +7,14 @@
 # Replace ~/mainsail with your actual Mainsail install directory (the
 # script uses $MAINSAIL_DIR, which defaults to ~/mainsail).
 
-# ---- /etc/nginx/conf.d/common_vars.conf ----
+# /etc/nginx/conf.d/common_vars.conf
 
 map $http_upgrade $connection_upgrade {
     default upgrade;
     '' close;
 }
 
-# ---- /etc/nginx/conf.d/upstreams.conf ----
+# /etc/nginx/conf.d/upstreams.conf
 
 upstream apiserver {
     ip_hash;
@@ -41,7 +41,7 @@ upstream mjpgstreamer4 {
     server 127.0.0.1:8083;
 }
 
-# ---- /etc/nginx/sites-available/mainsail ----
+# /etc/nginx/sites-available/mainsail
 # (also symlink this into /etc/nginx/sites-enabled/mainsail, and remove
 # /etc/nginx/sites-enabled/default if present, to avoid a default-server
 # conflict on port 80)

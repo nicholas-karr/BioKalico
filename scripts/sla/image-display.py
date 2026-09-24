@@ -11,6 +11,7 @@ Close by pressing ESC.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -18,76 +19,79 @@ import math
 import os
 import re
 import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-from typing import Optional
 import urllib.request
-import tempfile
-import argparse
-import shutil
+from typing import Optional
 
-import yaml
-import pyglet
-from PIL import Image
 import numpy as np
-
+import pyglet
+import yaml
+from PIL import Image
 from sla_video_runtime import VideoRegistry
-
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 PROJECTOR_HINTS = (
-    'projector',
-    'epson',
-    'benq',
-    'optoma',
-    'viewsonic',
-    'vivitek',
-    'infocus',
-    'nec',
+    "projector",
+    "epson",
+    "benq",
+    "optoma",
+    "viewsonic",
+    "vivitek",
+    "infocus",
+    "nec",
 )
 
 INTERNAL_DISPLAY_HINTS = (
-    'edp',
-    'lvds',
-    'internal',
-    'builtin',
-    'built-in',
+    "edp",
+    "lvds",
+    "internal",
+    "builtin",
+    "built-in",
 )
 
 DEFAULT_ALLOWED_ASPECT_RATIOS = {
     (16, 9),
-    (256, 135),   # DCI 4K (4096x2160)
+    (256, 135),  # DCI 4K (4096x2160)
     (4, 3),
     (1, 1),
 }
 
-PROJECTOR_SCORE_THRESHOLD = 50   # minimum score to qualify as a projector display
-_OUTPUTS_CACHE_TTL = 0.5   # seconds to cache connected-output enumeration (avoids xrandr spawn churn)
-PROJECTOR_IDLE_TIMEOUT = 300   # seconds of inactivity before turning projector off (5 minutes)
-PROJECTOR_SCAN_INTERVAL = 5      # seconds between projector detection scans
-PROJECTOR_OFF_CONFIRM_DELAY = 5.0   # seconds to wait before verifying the bulb actually turned off
+PROJECTOR_SCORE_THRESHOLD = (
+    50  # minimum score to qualify as a projector display
+)
+_OUTPUTS_CACHE_TTL = 0.5  # seconds to cache connected-output enumeration (avoids xrandr spawn churn)
+PROJECTOR_IDLE_TIMEOUT = (
+    300  # seconds of inactivity before turning projector off (5 minutes)
+)
+PROJECTOR_SCAN_INTERVAL = 5  # seconds between projector detection scans
+PROJECTOR_OFF_CONFIRM_DELAY = (
+    5.0  # seconds to wait before verifying the bulb actually turned off
+)
 
 
 def default_video_cache_dir() -> str:
     """Pick a cache directory that matches common MainsailOS layouts."""
     candidate_roots = [
-        os.environ.get('BIOSLICER_CACHE_ROOT'),
-        os.path.join(os.path.expanduser('~'), 'printer_data', 'cache'),
+        os.environ.get("BIOSLICER_CACHE_ROOT"),
+        os.path.join(os.path.expanduser("~"), "printer_data", "cache"),
     ]
 
     for root in candidate_roots:
         if root and os.path.isdir(root):
-            return os.path.join(root, 'bioslicer-sla-video-cache')
+            return os.path.join(root, "bioslicer-sla-video-cache")
 
-    return '/tmp/bioslicer-sla-video-cache'
+    return "/tmp/bioslicer-sla-video-cache"
 
 
 def _screen_signature(screen) -> tuple[int, int, int, int]:
@@ -97,7 +101,7 @@ def _screen_signature(screen) -> tuple[int, int, int, int]:
 def _parse_geometry(text: Optional[str]) -> Optional[tuple[int, int, int, int]]:
     if not text:
         return None
-    match = re.match(r'^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$', text)
+    match = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", text)
     if not match:
         return None
     return (
@@ -110,7 +114,7 @@ def _parse_geometry(text: Optional[str]) -> Optional[tuple[int, int, int, int]]:
 
 def _normalize_ratio(width: int, height: int) -> tuple[int, int]:
     if width <= 0 or height <= 0:
-        raise ValueError(f'invalid aspect ratio {width}x{height}')
+        raise ValueError(f"invalid aspect ratio {width}x{height}")
     divisor = math.gcd(width, height)
     return width // divisor, height // divisor
 
@@ -124,8 +128,8 @@ def _parse_allowed_aspect_ratios(raw_value) -> set[tuple[int, int]]:
         if isinstance(item, (list, tuple)) and len(item) == 2:
             parsed.add(_normalize_ratio(int(item[0]), int(item[1])))
         elif isinstance(item, str):
-            cleaned = item.replace('x', ':').replace('/', ':')
-            parts = cleaned.split(':', 1)
+            cleaned = item.replace("x", ":").replace("/", ":")
+            parts = cleaned.split(":", 1)
             if len(parts) == 2:
                 parsed.add(_normalize_ratio(int(parts[0]), int(parts[1])))
 
@@ -133,12 +137,12 @@ def _parse_allowed_aspect_ratios(raw_value) -> set[tuple[int, int]]:
 
 
 def _format_aspect_ratios(ratios: set[tuple[int, int]]) -> str:
-    return ', '.join(f'{w}:{h}' for w, h in sorted(ratios))
+    return ", ".join(f"{w}:{h}" for w, h in sorted(ratios))
 
 
 def _drm_connected_outputs() -> list[dict]:
     """Enumerate connected displays via /sys/class/drm (no X11/Wayland required)."""
-    drm_root = '/sys/class/drm'
+    drm_root = "/sys/class/drm"
     outputs = []
     try:
         entries = sorted(os.listdir(drm_root))
@@ -147,26 +151,30 @@ def _drm_connected_outputs() -> list[dict]:
 
     for entry in entries:
         # Only process named connectors, e.g. "card0-HDMI-A-1"
-        parts = entry.split('-', 1)
+        parts = entry.split("-", 1)
         if len(parts) < 2:
             continue
         connector = parts[1]
 
         base = os.path.join(drm_root, entry)
         try:
-            status = open(os.path.join(base, 'status')).read().strip()
+            status = open(os.path.join(base, "status")).read().strip()
         except OSError:
             continue
-        if status != 'connected':
+        if status != "connected":
             continue
 
         try:
-            enabled = open(os.path.join(base, 'enabled')).read().strip()
+            enabled = open(os.path.join(base, "enabled")).read().strip()
         except OSError:
-            enabled = 'unknown'
+            enabled = "unknown"
 
         try:
-            modes = [l.strip() for l in open(os.path.join(base, 'modes')) if l.strip()]
+            modes = [
+                l.strip()
+                for l in open(os.path.join(base, "modes"))
+                if l.strip()
+            ]
         except OSError:
             modes = []
 
@@ -174,30 +182,32 @@ def _drm_connected_outputs() -> list[dict]:
         preferred_mode = modes[0] if modes else None
         width, height = None, None
         if preferred_mode:
-            m = re.match(r'^(\d+)x(\d+)', preferred_mode)
+            m = re.match(r"^(\d+)x(\d+)", preferred_mode)
             if m:
                 width, height = int(m.group(1)), int(m.group(2))
 
-        outputs.append({
-            'name': connector,
-            'descriptor': connector.lower(),
-            'enabled': enabled == 'enabled',
-            'width': width,
-            'height': height,
-            'modes': modes,
-        })
+        outputs.append(
+            {
+                "name": connector,
+                "descriptor": connector.lower(),
+                "enabled": enabled == "enabled",
+                "width": width,
+                "height": height,
+                "modes": modes,
+            }
+        )
 
     return outputs
 
 
 def _xrandr_connected_outputs() -> list[dict]:
-    display = os.environ.get('DISPLAY')
+    display = os.environ.get("DISPLAY")
     if not display:
         return []
 
     try:
         proc = subprocess.run(
-            ['xrandr', '--current'],
+            ["xrandr", "--current"],
             check=True,
             capture_output=True,
             text=True,
@@ -210,8 +220,8 @@ def _xrandr_connected_outputs() -> list[dict]:
         return []
 
     output_re = re.compile(
-        r'^(?P<name>\S+)\s+connected(?P<primary>\s+primary)?\s+'
-        r'(?P<w>\d+)x(?P<h>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)'
+        r"^(?P<name>\S+)\s+connected(?P<primary>\s+primary)?\s+"
+        r"(?P<w>\d+)x(?P<h>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)"
     )
     outputs = []
     for line in proc.stdout.splitlines():
@@ -219,37 +229,39 @@ def _xrandr_connected_outputs() -> list[dict]:
         if not match:
             continue
 
-        width = int(match.group('w'))
-        height = int(match.group('h'))
-        x_pos = int(match.group('x'))
-        y_pos = int(match.group('y'))
-        outputs.append({
-            'name': match.group('name'),
-            'descriptor': match.group('name').lower(),
-            'primary': bool(match.group('primary')),
-            'width': width,
-            'height': height,
-            'geometry': (width, height, x_pos, y_pos),
-        })
+        width = int(match.group("w"))
+        height = int(match.group("h"))
+        x_pos = int(match.group("x"))
+        y_pos = int(match.group("y"))
+        outputs.append(
+            {
+                "name": match.group("name"),
+                "descriptor": match.group("name").lower(),
+                "primary": bool(match.group("primary")),
+                "width": width,
+                "height": height,
+                "geometry": (width, height, x_pos, y_pos),
+            }
+        )
 
     return outputs
 
 
 def _score_projector_output(output: dict) -> int:
-    name = output.get('name', '').lower()
-    descriptor = output.get('descriptor', '')
-    geometry = output.get('geometry')
+    name = output.get("name", "").lower()
+    descriptor = output.get("descriptor", "")
+    geometry = output.get("geometry")
 
     score = 0
     if any(hint in descriptor for hint in INTERNAL_DISPLAY_HINTS):
         score -= 300
     if any(hint in descriptor for hint in PROJECTOR_HINTS):
         score += 300
-    if name.startswith('hdmi'):
+    if name.startswith("hdmi"):
         score += 70
-    elif name.startswith('dp'):
+    elif name.startswith("dp"):
         score += 35
-    if not output.get('primary', False):
+    if not output.get("primary", False):
         score += 45
     # geometry tuple (w, h, x, y) used by the xrandr path; DRM path uses width/height directly
     if geometry:
@@ -258,8 +270,8 @@ def _score_projector_output(output: dict) -> int:
         if geometry[0] * geometry[1] >= 1920 * 1080:
             score += 15
     else:
-        w = output.get('width') or 0
-        h = output.get('height') or 0
+        w = output.get("width") or 0
+        h = output.get("height") or 0
         if w * h >= 1920 * 1080:
             score += 15
 
@@ -273,8 +285,11 @@ def _best_projector_output(outputs: list[dict]) -> Optional[dict]:
     return a non-projector output (e.g. the internal panel) when no projector is
     connected. Callers can treat ``None`` as "no projector present".
     """
-    candidates = [o for o in outputs
-                  if _score_projector_output(o) >= PROJECTOR_SCORE_THRESHOLD]
+    candidates = [
+        o
+        for o in outputs
+        if _score_projector_output(o) >= PROJECTOR_SCORE_THRESHOLD
+    ]
     if not candidates:
         return None
     return max(candidates, key=_score_projector_output)
@@ -289,14 +304,16 @@ def _match_screen_for_output(output, screens):
     change across a replug. Among same-resolution screens, prefer an offset
     (non-origin) one, since the projector is normally the extended display.
     """
-    geometry = output.get('geometry')
+    geometry = output.get("geometry")
     if geometry:
-        exact = next((s for s in screens if _screen_signature(s) == geometry), None)
+        exact = next(
+            (s for s in screens if _screen_signature(s) == geometry), None
+        )
         if exact is not None:
             return exact
         w, h = geometry[0], geometry[1]
     else:
-        w, h = output.get('width'), output.get('height')
+        w, h = output.get("width"), output.get("height")
     if not w or not h:
         return None
     same_size = [s for s in screens if int(s.width) == w and int(s.height) == h]
@@ -324,8 +341,8 @@ def guess_projector_monitor(screens):
     if best is not None:
         screen, output = best
         logger.info(
-            'Auto-selected monitor: %s %sx%s@(%s,%s)',
-            output.get('name', 'unknown'),
+            "Auto-selected monitor: %s %sx%s@(%s,%s)",
+            output.get("name", "unknown"),
             screen.width,
             screen.height,
             screen.x,
@@ -335,9 +352,11 @@ def guess_projector_monitor(screens):
 
     secondary_screens = [s for s in screens if (int(s.x), int(s.y)) != (0, 0)]
     if secondary_screens:
-        chosen = max(secondary_screens, key=lambda s: int(s.width) * int(s.height))
+        chosen = max(
+            secondary_screens, key=lambda s: int(s.width) * int(s.height)
+        )
         logger.info(
-            'Auto-selected non-primary monitor fallback: %sx%s@(%s,%s)',
+            "Auto-selected non-primary monitor fallback: %sx%s@(%s,%s)",
             chosen.width,
             chosen.height,
             chosen.x,
@@ -347,7 +366,7 @@ def guess_projector_monitor(screens):
 
     chosen = max(screens, key=lambda s: int(s.width) * int(s.height))
     logger.info(
-        'Auto-selected largest monitor fallback: %sx%s@(%s,%s)',
+        "Auto-selected largest monitor fallback: %sx%s@(%s,%s)",
         chosen.width,
         chosen.height,
         chosen.x,
@@ -356,13 +375,16 @@ def guess_projector_monitor(screens):
     return chosen
 
 
-def guess_projector_monitor_with_allowed_aspect(screens, allowed_aspect_ratios: set[tuple[int, int]]):
+def guess_projector_monitor_with_allowed_aspect(
+    screens, allowed_aspect_ratios: set[tuple[int, int]]
+):
     allowed = allowed_aspect_ratios or set()
     if not allowed:
         return guess_projector_monitor(screens)
 
     filtered_screens = [
-        screen for screen in screens
+        screen
+        for screen in screens
         if _normalize_ratio(int(screen.width), int(screen.height)) in allowed
     ]
     if not filtered_screens:
@@ -378,25 +400,34 @@ def enumerate_monitors():
 
         print("\nAvailable Monitors: index: widthxheight@(x,y)")
         for i, screen in enumerate(screens):
-            print(f"Monitor {i}: {screen.width}x{screen.height}@({screen.x},{screen.y})")
+            print(
+                f"Monitor {i}: {screen.width}x{screen.height}@({screen.x},{screen.y})"
+            )
 
         if screens:
             guessed = guess_projector_monitor(screens)
-            idx = next((i for i, screen in enumerate(screens) if screen == guessed), 0)
+            idx = next(
+                (i for i, screen in enumerate(screens) if screen == guessed), 0
+            )
             print(f"Auto-detect guess: Monitor {idx}")
     except Exception as e:
-        logger.warning("Could not enumerate monitors via pyglet (%s), falling back to DRM sysfs", e)
+        logger.warning(
+            "Could not enumerate monitors via pyglet (%s), falling back to DRM sysfs",
+            e,
+        )
         outputs = _drm_connected_outputs()
         if not outputs:
-            print("No monitors found (no display connection and /sys/class/drm reported no connected outputs)")
+            print(
+                "No monitors found (no display connection and /sys/class/drm reported no connected outputs)"
+            )
             return
 
         print("\nAvailable Monitors (via DRM sysfs): index: name widthxheight")
         for i, output in enumerate(outputs):
-            w = output.get('width')
-            h = output.get('height')
+            w = output.get("width")
+            h = output.get("height")
             res = f"{w}x{h}" if w and h else "unknown resolution"
-            enabled = " [enabled]" if output.get('enabled') else ""
+            enabled = " [enabled]" if output.get("enabled") else ""
             print(f"Monitor {i}: {output['name']} {res}{enabled}")
 
         best = max(outputs, key=_score_projector_output)
@@ -416,21 +447,26 @@ def _inhibit_gnome_suspend():
     def _worker():
         try:
             import gi
-            gi.require_version('Gio', '2.0')
+
+            gi.require_version("Gio", "2.0")
             from gi.repository import Gio, GLib
+
             session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
             result = session.call_sync(
-                'org.gnome.SessionManager',
-                '/org/gnome/SessionManager',
-                'org.gnome.SessionManager',
-                'Inhibit',
-                GLib.Variant('(susu)', (
-                    'image-display',  # app_id
-                    0,                # toplevel_xid (0 = none)
-                    'SLA printer display active',
-                    4 | 8,            # inhibit suspend (4) + inhibit idle (8)
-                )),
-                GLib.VariantType('(u)'),
+                "org.gnome.SessionManager",
+                "/org/gnome/SessionManager",
+                "org.gnome.SessionManager",
+                "Inhibit",
+                GLib.Variant(
+                    "(susu)",
+                    (
+                        "image-display",  # app_id
+                        0,  # toplevel_xid (0 = none)
+                        "SLA printer display active",
+                        4 | 8,  # inhibit suspend (4) + inhibit idle (8)
+                    ),
+                ),
+                GLib.VariantType("(u)"),
                 Gio.DBusCallFlags.NONE,
                 5000,
                 None,
@@ -446,19 +482,22 @@ def _inhibit_gnome_suspend():
 class ProjectorController:
     """Serial-port power control for projectors that accept ~0000 commands."""
 
-    _POWER_QUERY = b'~0000 ?\r'
-    _READ_TIMEOUT = 2.0   # seconds to wait for a reply to a query
+    _POWER_QUERY = b"~0000 ?\r"
+    _READ_TIMEOUT = 2.0  # seconds to wait for a reply to a query
 
     def __init__(self, device_path: Optional[str], enabled: bool = True):
         if enabled and not device_path:
             raise ValueError(
                 "ProjectorController: 'device_path' (the serial adapter "
                 "connected to the projector) is required when projector "
-                "control is enabled")
+                "control is enabled"
+            )
         self.device_path = device_path
         self.enabled = enabled
 
-    def _transact(self, cmd: bytes, expect_reply: bool = False) -> Optional[bytes]:
+    def _transact(
+        self, cmd: bytes, expect_reply: bool = False
+    ) -> Optional[bytes]:
         """Send cmd over the serial link, optionally waiting for a reply.
 
         Returns the raw reply bytes, or None if control is disabled, the
@@ -473,11 +512,16 @@ class ProjectorController:
             logger.error(
                 "PROJECTOR SERIAL LINK ERROR: cannot open %s (%s), check that "
                 "the adapter is plugged in and that 'projector_device' in the "
-                "config points to the right port", self.device_path, e)
+                "config points to the right port",
+                self.device_path,
+                e,
+            )
             return None
         try:
             os.write(fd, cmd)
-            logger.info("Projector command sent to %s: %r", self.device_path, cmd)
+            logger.info(
+                "Projector command sent to %s: %r", self.device_path, cmd
+            )
             if not expect_reply:
                 return None
             ready, _, _ = select.select([fd], [], [], self._READ_TIMEOUT)
@@ -486,24 +530,28 @@ class ProjectorController:
                     "PROJECTOR SERIAL LINK ERROR: no response from %s within "
                     "%.1fs, the projector may be unplugged, powered off at "
                     "the wall, or the adapter is misconfigured",
-                    self.device_path, self._READ_TIMEOUT)
+                    self.device_path,
+                    self._READ_TIMEOUT,
+                )
                 return None
             return os.read(fd, 256)
         except OSError as e:
             logger.error(
                 "PROJECTOR SERIAL LINK ERROR: communication with %s failed: %s",
-                self.device_path, e)
+                self.device_path,
+                e,
+            )
             return None
         finally:
             os.close(fd)
 
     def turn_on(self):
         logger.info("Turning projector on")
-        self._transact(b'~0000 1\r')
+        self._transact(b"~0000 1\r")
 
     def turn_off(self):
         logger.info("Turning projector off")
-        self._transact(b'~0000 0\r')
+        self._transact(b"~0000 0\r")
 
     def query_power(self) -> Optional[bool]:
         """Query the projector's current power state over the serial link.
@@ -516,13 +564,16 @@ class ProjectorController:
         reply = self._transact(self._POWER_QUERY, expect_reply=True)
         if reply is None:
             return None
-        if b'1' in reply:
+        if b"1" in reply:
             return True
-        if b'0' in reply:
+        if b"0" in reply:
             return False
         logger.error(
             "PROJECTOR SERIAL LINK ERROR: unrecognized power-status reply "
-            "from %s: %r", self.device_path, reply)
+            "from %s: %r",
+            self.device_path,
+            reply,
+        )
         return None
 
 
@@ -535,66 +586,92 @@ def find_monitor(
     allowed_aspect_ratios: Optional[set[tuple[int, int]]] = None,
 ):
     screens = display.get_screens()
-    
+
     if not screens:
         raise RuntimeError("No monitors found")
-    
+
     # If both size and position specified, match both
     if monitor_size and monitor_position:
         for screen in screens:
-            if (screen.width == monitor_size[0] and screen.height == monitor_size[1] and
-                screen.x == monitor_position[0] and screen.y == monitor_position[1]):
-                logger.info(f"Selected monitor by size {monitor_size} and position {monitor_position}")
+            if (
+                screen.width == monitor_size[0]
+                and screen.height == monitor_size[1]
+                and screen.x == monitor_position[0]
+                and screen.y == monitor_position[1]
+            ):
+                logger.info(
+                    f"Selected monitor by size {monitor_size} and position {monitor_position}"
+                )
                 return screen
-        logger.warning(f"Monitor with size {monitor_size} and position {monitor_position} not found, using fallback")
-    
+        logger.warning(
+            f"Monitor with size {monitor_size} and position {monitor_position} not found, using fallback"
+        )
+
     # If only size specified, match size
     if monitor_size:
         for screen in screens:
-            if screen.width == monitor_size[0] and screen.height == monitor_size[1]:
+            if (
+                screen.width == monitor_size[0]
+                and screen.height == monitor_size[1]
+            ):
                 logger.info(f"Selected monitor by size {monitor_size}")
                 return screen
-        logger.warning(f"Monitor with size {monitor_size} not found, using fallback")
-    
+        logger.warning(
+            f"Monitor with size {monitor_size} not found, using fallback"
+        )
+
     # If only position specified, match position
     if monitor_position:
         for screen in screens:
-            if screen.x == monitor_position[0] and screen.y == monitor_position[1]:
+            if (
+                screen.x == monitor_position[0]
+                and screen.y == monitor_position[1]
+            ):
                 logger.info(f"Selected monitor by position {monitor_position}")
                 return screen
-        logger.warning(f"Monitor at position {monitor_position} not found, using fallback")
+        logger.warning(
+            f"Monitor at position {monitor_position} not found, using fallback"
+        )
 
     if monitor_index is None and monitor_auto_detect:
         if allowed_aspect_ratios:
-            return guess_projector_monitor_with_allowed_aspect(screens, allowed_aspect_ratios)
+            return guess_projector_monitor_with_allowed_aspect(
+                screens, allowed_aspect_ratios
+            )
         return guess_projector_monitor(screens)
 
     if monitor_index is not None:
         try:
             monitor_index = int(monitor_index)
         except (TypeError, ValueError):
-            logger.warning("Invalid monitor index %r, using monitor 0", monitor_index)
+            logger.warning(
+                "Invalid monitor index %r, using monitor 0", monitor_index
+            )
             monitor_index = 0
-    
+
     # Fallback to index
     if monitor_index is None:
         monitor_index = 0
 
     if monitor_index < 0:
-        logger.warning(f"Negative monitor index {monitor_index} is invalid, using monitor 0")
+        logger.warning(
+            f"Negative monitor index {monitor_index} is invalid, using monitor 0"
+        )
         monitor_index = 0
-    
+
     if monitor_index >= len(screens):
-        logger.warning(f"Monitor index {monitor_index} not found, using monitor 0")
+        logger.warning(
+            f"Monitor index {monitor_index} not found, using monitor 0"
+        )
         monitor_index = 0
-    
+
     logger.info(f"Selected monitor {monitor_index}")
     return screens[monitor_index]
 
 
 # Handle --enum-monitors before pyglet.window is accessed. Accessing pyglet.window
 # triggers X11 display connection at class-definition time, which fails without a display.
-if __name__ == '__main__' and '--enum-monitors' in sys.argv:
+if __name__ == "__main__" and "--enum-monitors" in sys.argv:
     enumerate_monitors()
     sys.exit(0)
 
@@ -614,12 +691,17 @@ class ImageDisplayWindow(pyglet.window.Window):
         best = max(modes, key=lambda m: m.width * m.height)
         logger.info(
             "Selecting display mode %sx%s (current: %sx%s)",
-            best.width, best.height, screen.width, screen.height,
+            best.width,
+            best.height,
+            screen.width,
+            screen.height,
         )
         return best
 
     def __init__(self, screen, **kwargs):
-        config = pyglet.gl.Config(double_buffer=True, sample_buffers=0, samples=0)
+        config = pyglet.gl.Config(
+            double_buffer=True, sample_buffers=0, samples=0
+        )
         mode = self._best_mode(screen)
 
         super().__init__(
@@ -629,11 +711,13 @@ class ImageDisplayWindow(pyglet.window.Window):
             mode=mode,
             vsync=True,
             config=config,
-            **kwargs
+            **kwargs,
         )
 
         self.current_sprite = None
-        pyglet.clock.schedule_once(lambda dt: self._suppress_gnome_overlays(), 0)
+        pyglet.clock.schedule_once(
+            lambda dt: self._suppress_gnome_overlays(), 0
+        )
 
     @staticmethod
     def _suppress_gnome_overlays():
@@ -646,13 +730,18 @@ class ImageDisplayWindow(pyglet.window.Window):
         Runs in a daemon thread so it never blocks the pyglet event loop.
         """
         import threading
-        threading.Thread(target=ImageDisplayWindow._suppress_gnome_overlays_worker, daemon=True).start()
+
+        threading.Thread(
+            target=ImageDisplayWindow._suppress_gnome_overlays_worker,
+            daemon=True,
+        ).start()
 
     @staticmethod
     def _suppress_gnome_overlays_worker():
         try:
             import gi
-            gi.require_version('Gio', '2.0')
+
+            gi.require_version("Gio", "2.0")
             from gi.repository import Gio, GLib
 
             session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -660,10 +749,22 @@ class ImageDisplayWindow(pyglet.window.Window):
             # 1. Close the Activities overview.
             try:
                 session.call_sync(
-                    'org.gnome.Shell', '/org/gnome/Shell',
-                    'org.freedesktop.DBus.Properties', 'Set',
-                    GLib.Variant('(ssv)', ('org.gnome.Shell', 'OverviewActive', GLib.Variant('b', False))),
-                    None, Gio.DBusCallFlags.NONE, 1000, None,
+                    "org.gnome.Shell",
+                    "/org/gnome/Shell",
+                    "org.freedesktop.DBus.Properties",
+                    "Set",
+                    GLib.Variant(
+                        "(ssv)",
+                        (
+                            "org.gnome.Shell",
+                            "OverviewActive",
+                            GLib.Variant("b", False),
+                        ),
+                    ),
+                    None,
+                    Gio.DBusCallFlags.NONE,
+                    1000,
+                    None,
                 )
             except Exception as e:
                 logger.debug("Could not close GNOME overview: %s", e)
@@ -673,11 +774,15 @@ class ImageDisplayWindow(pyglet.window.Window):
             for notif_id in range(1, 200):
                 try:
                     session.call_sync(
-                        'org.freedesktop.Notifications',
-                        '/org/freedesktop/Notifications',
-                        'org.freedesktop.Notifications', 'CloseNotification',
-                        GLib.Variant('(u)', (notif_id,)),
-                        None, Gio.DBusCallFlags.NONE, 200, None,
+                        "org.freedesktop.Notifications",
+                        "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications",
+                        "CloseNotification",
+                        GLib.Variant("(u)", (notif_id,)),
+                        None,
+                        Gio.DBusCallFlags.NONE,
+                        200,
+                        None,
                     )
                 except Exception:
                     pass
@@ -689,13 +794,15 @@ class ImageDisplayWindow(pyglet.window.Window):
 
     def on_mouse_leave(self, x, y):
         self.set_mouse_visible(True)
-        
+
     def on_resize(self, width, height):
         # width/height are logical pixels; use the framebuffer for a 1:1 physical-pixel
         # coordinate system so sprites are never scaled by OS HiDPI factors.
         fb_w, fb_h = self.get_framebuffer_size()
         self.viewport = (0, 0, fb_w, fb_h)
-        self.projection = pyglet.math.Mat4.orthogonal_projection(0, fb_w, 0, fb_h, -1, 1)
+        self.projection = pyglet.math.Mat4.orthogonal_projection(
+            0, fb_w, 0, fb_h, -1, 1
+        )
 
     def on_draw(self):
         """Render the current image."""
@@ -704,14 +811,18 @@ class ImageDisplayWindow(pyglet.window.Window):
         if self.current_sprite:
             self.current_sprite.draw()
 
-    def _set_texture(self, texture, width: int, height: int, h_offset: float = 0.0):
+    def _set_texture(
+        self, texture, width: int, height: int, h_offset: float = 0.0
+    ):
         fb_w, fb_h = self.get_framebuffer_size()
         self.current_sprite = pyglet.sprite.Sprite(texture, x=0, y=0)
         self.current_sprite.scale = 1
         self.current_sprite.x = int((fb_w - width) / 2 + round(h_offset))
         self.current_sprite.y = (fb_h - height) // 2
-        
-    def load_image(self, image_path: str, rotation: int = 0, h_offset: float = 0.0):
+
+    def load_image(
+        self, image_path: str, rotation: int = 0, h_offset: float = 0.0
+    ):
         """Load an image from a local file path.
 
         Args:
@@ -724,7 +835,7 @@ class ImageDisplayWindow(pyglet.window.Window):
             # Load image using PIL
             logger.info(f"Loading image: {image_path}")
             img = Image.open(image_path)
-            img = img.convert('RGBA')
+            img = img.convert("RGBA")
 
             if rotation:
                 logger.info(f"Rotating image by {rotation} degrees")
@@ -739,20 +850,24 @@ class ImageDisplayWindow(pyglet.window.Window):
             raw_data = img_data.tobytes()
 
             pyglet_image = pyglet.image.ImageData(
-                width, height, 'RGBA', raw_data, pitch=-width * 4
+                width, height, "RGBA", raw_data, pitch=-width * 4
             )
 
             texture = pyglet_image.get_texture()
 
             self._set_texture(texture, width, height, h_offset)
 
-            logger.info(f"Image loaded successfully: {width}x{height}, rotation={rotation}°, h_offset={h_offset}")
+            logger.info(
+                f"Image loaded successfully: {width}x{height}, rotation={rotation}°, h_offset={h_offset}"
+            )
 
         except Exception as e:
             logger.error(f"Failed to load image: {e}")
             raise
 
-    def load_rgba_frame(self, width: int, height: int, frame_rgba: bytes, h_offset: float = 0.0):
+    def load_rgba_frame(
+        self, width: int, height: int, frame_rgba: bytes, h_offset: float = 0.0
+    ):
         """Load a raw RGBA frame and render it fullscreen."""
         try:
             frame = np.frombuffer(frame_rgba, dtype=np.uint8)
@@ -760,11 +875,7 @@ class ImageDisplayWindow(pyglet.window.Window):
             frame = np.flipud(frame)
 
             pyglet_image = pyglet.image.ImageData(
-                width,
-                height,
-                'RGBA',
-                frame.tobytes(),
-                pitch=-width * 4
+                width, height, "RGBA", frame.tobytes(), pitch=-width * 4
             )
 
             texture = pyglet_image.get_texture()
@@ -772,7 +883,7 @@ class ImageDisplayWindow(pyglet.window.Window):
         except Exception as e:
             logger.error(f"Failed to load RGBA frame: {e}")
             raise
-    
+
     def clear_image(self):
         """Clear the current image."""
         self.current_sprite = None
@@ -780,19 +891,21 @@ class ImageDisplayWindow(pyglet.window.Window):
 
 class ImageDisplayServer:
     """TCP server for handling image display commands."""
-    
+
     def __init__(self, config: dict):
         self.config = config
-        self.host = config.get('host', '127.0.0.1')
-        self.port = config.get('port', 5555)
-        self.require_exact_resolution = bool(config.get('require_exact_resolution', True))
-        self.monitor_auto_detect = bool(config.get('monitor_auto_detect', True))
+        self.host = config.get("host", "127.0.0.1")
+        self.port = config.get("port", 5555)
+        self.require_exact_resolution = bool(
+            config.get("require_exact_resolution", True)
+        )
+        self.monitor_auto_detect = bool(config.get("monitor_auto_detect", True))
         self.allowed_aspect_ratios = _parse_allowed_aspect_ratios(
-            config.get('allowed_aspect_ratios')
+            config.get("allowed_aspect_ratios")
         )
         self.bound_aspect_ratio: Optional[tuple[int, int]] = None
 
-        cache_dir = config.get('video_cache_dir')
+        cache_dir = config.get("video_cache_dir")
         if not cache_dir:
             cache_dir = default_video_cache_dir()
             logger.info("Using default video cache dir: %s", cache_dir)
@@ -804,13 +917,13 @@ class ImageDisplayServer:
 
         self.video_registry = VideoRegistry(
             cache_dir=cache_dir,
-            hwaccel=config.get('ffmpeg_hwaccel', 'auto'),
-            hw_decoder=config.get('ffmpeg_hw_decoder'),
+            hwaccel=config.get("ffmpeg_hwaccel", "auto"),
+            hw_decoder=config.get("ffmpeg_hw_decoder"),
         )
 
         self.projector = ProjectorController(
-            device_path=config.get('projector_device'),
-            enabled=bool(config.get('projector_control', True)),
+            device_path=config.get("projector_device"),
+            enabled=bool(config.get("projector_control", True)),
         )
         self._projector_available: bool = False
         self._projector_on: bool = False
@@ -843,14 +956,18 @@ class ImageDisplayServer:
         self._outputs_cache_time: float = 0.0
         self._outputs_lock = threading.Lock()
 
-    def _connected_outputs(self, max_age: float = _OUTPUTS_CACHE_TTL) -> list[dict]:
+    def _connected_outputs(
+        self, max_age: float = _OUTPUTS_CACHE_TTL
+    ) -> list[dict]:
         """Connected outputs, cached for a short TTL to avoid spawning an
         xrandr/DRM query on every readiness poll. Pass max_age=0 to force a
         fresh read."""
         now = time.monotonic()
         with self._outputs_lock:
-            if (self._outputs_cache is not None
-                    and now - self._outputs_cache_time < max_age):
+            if (
+                self._outputs_cache is not None
+                and now - self._outputs_cache_time < max_age
+            ):
                 return self._outputs_cache
             outputs = _xrandr_connected_outputs() or _drm_connected_outputs()
             self._outputs_cache = outputs
@@ -865,9 +982,12 @@ class ImageDisplayServer:
         identified correctly.
         """
         best = _best_projector_output(self._connected_outputs())
-        if (best and best.get('width') == int(screen.width)
-                and best.get('height') == int(screen.height)):
-            return best.get('name')
+        if (
+            best
+            and best.get("width") == int(screen.width)
+            and best.get("height") == int(screen.height)
+        ):
+            return best.get("name")
         return None
 
     def _record_binding(self, window, screen):
@@ -876,7 +996,8 @@ class ImageDisplayServer:
         with self._bind_lock:
             self.window = window
             self.bound_aspect_ratio = _normalize_ratio(
-                int(screen.width), int(screen.height))
+                int(screen.width), int(screen.height)
+            )
             self._current_screen_w = int(screen.width)
             self._current_screen_h = int(screen.height)
             self._bound_output_name = output_name
@@ -885,52 +1006,54 @@ class ImageDisplayServer:
         """Atomically read the current window-binding snapshot (any thread)."""
         with self._bind_lock:
             return {
-                'window': self.window,
-                'width': self._current_screen_w,
-                'height': self._current_screen_h,
-                'output_name': self._bound_output_name,
-                'aspect': self.bound_aspect_ratio,
+                "window": self.window,
+                "width": self._current_screen_w,
+                "height": self._current_screen_h,
+                "output_name": self._bound_output_name,
+                "aspect": self.bound_aspect_ratio,
             }
 
     def _aspect_matches_bound(self, width: int, height: int) -> bool:
-        bound = self._binding_snapshot()['aspect']
+        bound = self._binding_snapshot()["aspect"]
         if bound is None:
             return False
         return _normalize_ratio(width, height) == bound
 
     def _selected_monitor_message(self, screen) -> str:
         ratio = _normalize_ratio(int(screen.width), int(screen.height))
-        return f'{screen.width}x{screen.height} ({ratio[0]}:{ratio[1]})'
-        
-    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        addr = writer.get_extra_info('peername')
+        return f"{screen.width}x{screen.height} ({ratio[0]}:{ratio[1]})"
+
+    async def handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ):
+        addr = writer.get_extra_info("peername")
         logger.debug(f"Client connected: {addr}")
-        
+
         try:
             while True:
                 # Read data until newline
                 data = await reader.readline()
                 if not data:
                     break
-                
+
                 # Parse JSON command
                 try:
                     command = json.loads(data.decode().strip())
                     logger.debug(f"Received command: {command}")
-                    
+
                     response = await self.process_command(command)
-                    
-                    writer.write(json.dumps(response).encode() + b'\n')
+
+                    writer.write(json.dumps(response).encode() + b"\n")
                     await writer.drain()
-                    
+
                 except json.JSONDecodeError as e:
                     error_response = {
-                        'status': 'error',
-                        'message': f'Invalid JSON: {e}'
+                        "status": "error",
+                        "message": f"Invalid JSON: {e}",
                     }
-                    writer.write(json.dumps(error_response).encode() + b'\n')
+                    writer.write(json.dumps(error_response).encode() + b"\n")
                     await writer.drain()
-                    
+
         except asyncio.CancelledError:
             logger.info(f"Client handler cancelled: {addr}")
         except Exception as e:
@@ -939,39 +1062,39 @@ class ImageDisplayServer:
             logger.debug(f"Client disconnected: {addr}")
             writer.close()
             await writer.wait_closed()
-    
+
     async def process_command(self, command: dict) -> dict:
         """Process a command and return response."""
-        cmd_type = command.get('type', '').upper()
-        
-        if cmd_type == 'DISPLAY_IMAGE':
+        cmd_type = command.get("type", "").upper()
+
+        if cmd_type == "DISPLAY_IMAGE":
             return await self.handle_display_image(command)
-        elif cmd_type == 'LOAD_VIDEO':
+        elif cmd_type == "LOAD_VIDEO":
             return await self.handle_load_video(command)
-        elif cmd_type == 'LOAD_VIDEOS_FROM_GCODE':
+        elif cmd_type == "LOAD_VIDEOS_FROM_GCODE":
             return await self.handle_load_videos_from_gcode(command)
-        elif cmd_type == 'SHOW_VIDEO_FRAME':
+        elif cmd_type == "SHOW_VIDEO_FRAME":
             return await self.handle_show_video_frame(command)
-        elif cmd_type == 'UNLOAD_VIDEO':
+        elif cmd_type == "UNLOAD_VIDEO":
             return await self.handle_unload_video(command)
-        elif cmd_type == 'UNLOAD_ALL':
+        elif cmd_type == "UNLOAD_ALL":
             return await self.handle_unload_all_videos()
-        elif cmd_type == 'LIST_VIDEOS':
+        elif cmd_type == "LIST_VIDEOS":
             return await self.handle_list_videos()
-        elif cmd_type == 'CLEAR':
+        elif cmd_type == "CLEAR":
             return await self.handle_clear()
-        elif cmd_type == 'PROJECTOR_OFF':
+        elif cmd_type == "PROJECTOR_OFF":
             return await self.handle_projector_off()
-        elif cmd_type == 'PROJECTOR_ON':
+        elif cmd_type == "PROJECTOR_ON":
             return await self.handle_projector_on()
-        elif cmd_type == 'STATUS':
+        elif cmd_type == "STATUS":
             return await self.handle_status()
         else:
             return {
-                'status': 'error',
-                'message': f'Unknown command type: {cmd_type}'
+                "status": "error",
+                "message": f"Unknown command type: {cmd_type}",
             }
-    
+
     def _ensure_projector_on(self) -> Optional[dict]:
         """Check projector readiness and power it on if needed.
 
@@ -984,10 +1107,10 @@ class ImageDisplayServer:
             self.projector.turn_on()
             self._projector_on = True
             return {
-                'status': 'error',
-                'message': (
-                    'No projector display detected; sent turn-on command. '
-                    'Retry when the projector is ready.'
+                "status": "error",
+                "message": (
+                    "No projector display detected; sent turn-on command. "
+                    "Retry when the projector is ready."
                 ),
             }
         if not self._projector_on:
@@ -995,30 +1118,27 @@ class ImageDisplayServer:
             self._projector_on = True
         if not self._window_bound_to_projector():
             return {
-                'status': 'error',
-                'message': (
-                    'Projector connected but display window is not yet bound at its '
-                    'native resolution; run PROJECTOR_ON and retry.'
+                "status": "error",
+                "message": (
+                    "Projector connected but display window is not yet bound at its "
+                    "native resolution; run PROJECTOR_ON and retry."
                 ),
             }
         return None
 
     async def handle_display_image(self, command: dict) -> dict:
         try:
-            image_path = command.get('path')
-            rotation = int(command.get('rotation', 0))
-            h_offset = float(command.get('h_offset', 0.0))
+            image_path = command.get("path")
+            rotation = int(command.get("rotation", 0))
+            h_offset = float(command.get("h_offset", 0.0))
 
             if not image_path:
-                return {
-                    'status': 'error',
-                    'message': 'Missing path parameter'
-                }
+                return {"status": "error", "message": "Missing path parameter"}
 
             if rotation not in (0, 90, 180, 270):
                 return {
-                    'status': 'error',
-                    'message': f'Invalid rotation {rotation}; must be one of 0, 90, 180, 270'
+                    "status": "error",
+                    "message": f"Invalid rotation {rotation}; must be one of 0, 90, 180, 270",
                 }
 
             projector_err = self._ensure_projector_on()
@@ -1026,7 +1146,8 @@ class ImageDisplayServer:
                 return projector_err
 
             local_path, is_temp = await asyncio.to_thread(
-                self._resolve_image_path, image_path)
+                self._resolve_image_path, image_path
+            )
             try:
                 width, height = self._read_image_size(local_path)
             except Exception:
@@ -1039,27 +1160,40 @@ class ImageDisplayServer:
             else:
                 rotated_size = (width, height)
 
-            if self.require_exact_resolution and not self._aspect_matches_bound(*rotated_size):
+            if self.require_exact_resolution and not self._aspect_matches_bound(
+                *rotated_size
+            ):
                 allowed = _format_aspect_ratios(self.allowed_aspect_ratios)
-                bound = _format_aspect_ratios({self.bound_aspect_ratio}) if self.bound_aspect_ratio else 'unknown'
+                bound = (
+                    _format_aspect_ratios({self.bound_aspect_ratio})
+                    if self.bound_aspect_ratio
+                    else "unknown"
+                )
                 logger.error(
                     "Rejected image: %sx%s (rot=%s) does not match bound aspect ratio %s",
-                    width, height, rotation, bound
+                    width,
+                    height,
+                    rotation,
+                    bound,
                 )
-                pyglet.clock.schedule_once(lambda dt: self.window.clear_image(), 0)
+                pyglet.clock.schedule_once(
+                    lambda dt: self.window.clear_image(), 0
+                )
                 if is_temp:
                     self._cleanup_temp_file(local_path)
                 return {
-                    'status': 'error',
-                    'message': (
-                        f'Image aspect ratio {rotated_size[0]}x{rotated_size[1]} does not match '
-                        f'bound monitor aspect ratio {bound}. Allowed ratios: {allowed}'
-                    )
+                    "status": "error",
+                    "message": (
+                        f"Image aspect ratio {rotated_size[0]}x{rotated_size[1]} does not match "
+                        f"bound monitor aspect ratio {bound}. Allowed ratios: {allowed}"
+                    ),
                 }
 
             # Schedule image loading on the main pyglet thread, then clean up
             # any downloaded temp file regardless of whether the load succeeded.
-            def _load_and_cleanup(dt, p=local_path, r=rotation, o=h_offset, temp=is_temp):
+            def _load_and_cleanup(
+                dt, p=local_path, r=rotation, o=h_offset, temp=is_temp
+            ):
                 try:
                     self.window.load_image(p, r, o)
                 finally:
@@ -1072,62 +1206,62 @@ class ImageDisplayServer:
             self._last_content_change = time.monotonic()
 
             return {
-                'status': 'success',
-                'message': f'Displaying image: {image_path} (rotation={rotation}°, h_offset={h_offset})'
+                "status": "success",
+                "message": f"Displaying image: {image_path} (rotation={rotation}°, h_offset={h_offset})",
             }
 
         except Exception as e:
             logger.error(f"Error displaying image: {e}")
-            return {
-                'status': 'error',
-                'message': str(e)
-            }
+            return {"status": "error", "message": str(e)}
 
     async def handle_load_video(self, command: dict) -> dict:
         try:
-            name = command.get('name')
-            path = command.get('path')
+            name = command.get("name")
+            path = command.get("path")
             if not name:
-                return {'status': 'error', 'message': 'Missing name parameter'}
+                return {"status": "error", "message": "Missing name parameter"}
             if not path:
-                return {'status': 'error', 'message': 'Missing path parameter'}
+                return {"status": "error", "message": "Missing path parameter"}
 
             meta = await asyncio.to_thread(
                 self.video_registry.load_video,
                 str(name),
                 str(path),
-                command.get('hwaccel'),
-                command.get('hw_decoder'),
+                command.get("hwaccel"),
+                command.get("hw_decoder"),
             )
-            return {'status': 'success', 'video': meta}
+            return {"status": "success", "video": meta}
         except Exception as e:
             logger.error(f"Error loading video: {e}")
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     async def handle_load_videos_from_gcode(self, command: dict) -> dict:
         try:
-            gcode_path = command.get('gcode_path')
+            gcode_path = command.get("gcode_path")
             if not gcode_path:
-                return {'status': 'error', 'message': 'Missing gcode_path parameter'}
+                return {
+                    "status": "error",
+                    "message": "Missing gcode_path parameter",
+                }
 
             loaded = await asyncio.to_thread(
                 self.video_registry.load_videos_from_gcode,
                 str(gcode_path),
             )
-            return {'status': 'success', 'loaded': loaded}
+            return {"status": "success", "loaded": loaded}
         except Exception as e:
             logger.error(f"Error loading videos from G-code: {e}")
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     async def handle_show_video_frame(self, command: dict) -> dict:
         try:
-            name = command.get('name')
-            frame = command.get('frame')
-            h_offset = float(command.get('h_offset', 0.0))
+            name = command.get("name")
+            frame = command.get("frame")
+            h_offset = float(command.get("h_offset", 0.0))
             if not name:
-                return {'status': 'error', 'message': 'Missing name parameter'}
+                return {"status": "error", "message": "Missing name parameter"}
             if frame is None:
-                return {'status': 'error', 'message': 'Missing frame parameter'}
+                return {"status": "error", "message": "Missing frame parameter"}
 
             projector_err = self._ensure_projector_on()
             if projector_err:
@@ -1140,16 +1274,16 @@ class ImageDisplayServer:
                 frame_index,
             )
 
-            window = self._binding_snapshot()['window']
+            window = self._binding_snapshot()["window"]
             if window is None:
-                return {'status': 'error', 'message': 'No display window bound'}
+                return {"status": "error", "message": "No display window bound"}
             _, fb_h = window.get_framebuffer_size()
             if height != fb_h:
                 return {
-                    'status': 'error',
-                    'message': (
-                        f'Frame height {height} does not match projector height '
-                        f'{fb_h}; video must vertically fill the projector'
+                    "status": "error",
+                    "message": (
+                        f"Frame height {height} does not match projector height "
+                        f"{fb_h}; video must vertically fill the projector"
                     ),
                 }
 
@@ -1159,7 +1293,9 @@ class ImageDisplayServer:
             # change can rebind self.window and close this one between
             # scheduling and execution, so a stale/closed reference here
             # must be a safe no-op rather than an error.
-            def _show_frame(dt, w=width, h=height, r=rgba, o=h_offset, expected=window):
+            def _show_frame(
+                dt, w=width, h=height, r=rgba, o=h_offset, expected=window
+            ):
                 current = self.window
                 if current is None or current is not expected:
                     return
@@ -1169,41 +1305,46 @@ class ImageDisplayServer:
             self._has_content = True
             self._last_content_change = time.monotonic()
             return {
-                'status': 'success',
-                'message': f'Displayed frame {frame_index} from {name}',
-                'frame': frame_index,
-                'name': name,
+                "status": "success",
+                "message": f"Displayed frame {frame_index} from {name}",
+                "frame": frame_index,
+                "name": name,
             }
         except Exception as e:
             logger.error(f"Error showing video frame: {e}")
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     async def handle_unload_video(self, command: dict) -> dict:
         try:
-            name = command.get('name')
+            name = command.get("name")
             if not name:
-                return {'status': 'error', 'message': 'Missing name parameter'}
+                return {"status": "error", "message": "Missing name parameter"}
 
-            unloaded = await asyncio.to_thread(self.video_registry.unload_video, str(name))
+            unloaded = await asyncio.to_thread(
+                self.video_registry.unload_video, str(name)
+            )
             if unloaded:
-                return {'status': 'success', 'message': f'Unloaded {name}'}
-            return {'status': 'error', 'message': f'Video not loaded: {name}'}
+                return {"status": "success", "message": f"Unloaded {name}"}
+            return {"status": "error", "message": f"Video not loaded: {name}"}
         except Exception as e:
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     async def handle_unload_all_videos(self) -> dict:
         try:
             count = await asyncio.to_thread(self.video_registry.unload_all)
-            return {'status': 'success', 'message': f'Unloaded {count} video(s)'}
+            return {
+                "status": "success",
+                "message": f"Unloaded {count} video(s)",
+            }
         except Exception as e:
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     async def handle_list_videos(self) -> dict:
         try:
             videos = await asyncio.to_thread(self.video_registry.list_videos)
-            return {'status': 'success', 'videos': videos}
+            return {"status": "success", "videos": videos}
         except Exception as e:
-            return {'status': 'error', 'message': str(e)}
+            return {"status": "error", "message": str(e)}
 
     def _resolve_image_path(self, image_path: str) -> tuple[str, bool]:
         """Resolve image_path to a local path, downloading URLs to a temp file.
@@ -1216,11 +1357,11 @@ class ImageDisplayServer:
         loop. The temp file is created and cleaned up here on any failure so
         a failed/timed-out download never leaks an orphaned .tmp file.
         """
-        if image_path.startswith(('http://', 'https://')):
+        if image_path.startswith(("http://", "https://")):
             logger.info(f"Downloading image from URL: {image_path}")
-            fd, tmp_path = tempfile.mkstemp(suffix='.tmp')
+            fd, tmp_path = tempfile.mkstemp(suffix=".tmp")
             try:
-                with os.fdopen(fd, 'wb') as tmp_file:
+                with os.fdopen(fd, "wb") as tmp_file:
                     with urllib.request.urlopen(image_path, timeout=15) as resp:
                         shutil.copyfileobj(resp, tmp_file)
                 return tmp_path, True
@@ -1242,10 +1383,10 @@ class ImageDisplayServer:
                 return img.size
         except Exception as e:
             raise RuntimeError(f"Failed to read image size: {e}")
-    
+
     async def handle_clear(self) -> dict:
         try:
-            window = self._binding_snapshot()['window']
+            window = self._binding_snapshot()["window"]
             if window:
                 # Re-check self.window fresh when the callback fires (see
                 # handle_show_video_frame for the same rebind-race guard) so
@@ -1260,24 +1401,18 @@ class ImageDisplayServer:
                 pyglet.clock.schedule_once(_clear, 0)
             self._has_content = False
             self._last_content_change = time.monotonic()
-            return {
-                'status': 'success',
-                'message': 'Image cleared'
-            }
+            return {"status": "success", "message": "Image cleared"}
         except Exception as e:
-            return {
-                'status': 'error',
-                'message': str(e)
-            }
+            return {"status": "error", "message": str(e)}
 
     async def handle_status(self) -> dict:
         outputs = self._connected_outputs()
 
         displays = [
             {
-                'name': o.get('name', ''),
-                'width': o.get('width'),
-                'height': o.get('height'),
+                "name": o.get("name", ""),
+                "width": o.get("width"),
+                "height": o.get("height"),
             }
             for o in outputs
         ]
@@ -1290,24 +1425,32 @@ class ImageDisplayServer:
         # resolution matches the bound window.
         bound = self._binding_snapshot()
         window_info: Optional[dict] = None
-        if bound['width'] is not None:
+        if bound["width"] is not None:
             window_info = {
-                'width': bound['width'],
-                'height': bound['height'],
+                "width": bound["width"],
+                "height": bound["height"],
             }
             match_index: Optional[int] = None
-            if bound['output_name'] is not None:
+            if bound["output_name"] is not None:
                 match_index = next(
-                    (i for i, o in enumerate(outputs)
-                     if o.get('name') == bound['output_name']), None)
+                    (
+                        i
+                        for i, o in enumerate(outputs)
+                        if o.get("name") == bound["output_name"]
+                    ),
+                    None,
+                )
             if match_index is None:
                 best = _best_projector_output(outputs)
-                if (best and best.get('width') == bound['width']
-                        and best.get('height') == bound['height']):
+                if (
+                    best
+                    and best.get("width") == bound["width"]
+                    and best.get("height") == bound["height"]
+                ):
                     match_index = outputs.index(best)
             if match_index is not None:
-                window_info['display_name'] = outputs[match_index].get('name')
-                window_info['display_index'] = match_index
+                window_info["display_name"] = outputs[match_index].get("name")
+                window_info["display_index"] = match_index
 
         idle_seconds: Optional[float] = None
         last_activity_unix_time: Optional[float] = None
@@ -1317,19 +1460,19 @@ class ImageDisplayServer:
             last_activity_unix_time = time.time() - idle_seconds
 
         return {
-            'status': 'success',
-            'projector_available': self._projector_available,
-            'projector_on': self._projector_on,
-            'ready': self._projector_available,
+            "status": "success",
+            "projector_available": self._projector_available,
+            "projector_on": self._projector_on,
+            "ready": self._projector_available,
             # display_ready is the rigorous readiness signal: the window is
             # bound to the projector output at its native resolution. Prefer
             # this over 'ready' (which only reports electrical connection).
-            'display_ready': self._window_bound_to_projector(),
-            'has_content': self._has_content,
-            'idle_seconds': idle_seconds,
-            'last_activity_unix_time': last_activity_unix_time,
-            'displays': displays,
-            'window': window_info,
+            "display_ready": self._window_bound_to_projector(),
+            "has_content": self._has_content,
+            "idle_seconds": idle_seconds,
+            "last_activity_unix_time": last_activity_unix_time,
+            "displays": displays,
+            "window": window_info,
         }
 
     async def handle_projector_on(self) -> dict:
@@ -1341,22 +1484,25 @@ class ImageDisplayServer:
         # display is electrically connected. The compositor may still be
         # applying its saved mode, or the window move may still be retrying.
         if self._window_bound_to_projector():
-            return {'status': 'success', 'message': 'Projector on and display ready'}
+            return {
+                "status": "success",
+                "message": "Projector on and display ready",
+            }
 
         if self._projector_available:
             return {
-                'status': 'not_ready',
-                'message': 'Projector connected; waiting for window to bind at native resolution',
+                "status": "not_ready",
+                "message": "Projector connected; waiting for window to bind at native resolution",
             }
 
         return {
-            'status': 'not_ready',
-            'message': 'Projector on command sent; waiting for display to connect',
+            "status": "not_ready",
+            "message": "Projector on command sent; waiting for display to connect",
         }
 
     async def handle_projector_off(self) -> dict:
         self._turn_off_and_confirm()
-        return {'status': 'success', 'message': 'Projector turned off'}
+        return {"status": "success", "message": "Projector turned off"}
 
     def _turn_off_and_confirm(self):
         """Send the power-off command, then verify the bulb actually went out.
@@ -1376,13 +1522,16 @@ class ImageDisplayServer:
                     "PROJECTOR ERROR: power-off command was sent but the "
                     "projector still reports power ON %.0fs later, the bulb "
                     "may not have actually turned off; check the projector "
-                    "and the serial adapter", PROJECTOR_OFF_CONFIRM_DELAY)
+                    "and the serial adapter",
+                    PROJECTOR_OFF_CONFIRM_DELAY,
+                )
                 self._projector_on = True
             elif state is None and self.projector.enabled:
                 logger.error(
                     "PROJECTOR SERIAL LINK ERROR: could not confirm power-off "
                     "state for %s after sending the off command",
-                    self.projector.device_path)
+                    self.projector.device_path,
+                )
 
         threading.Thread(target=_confirm, daemon=True).start()
 
@@ -1398,18 +1547,21 @@ class ImageDisplayServer:
         pixel size the window is actually bound to.
         """
         bound = self._binding_snapshot()
-        if bound['window'] is None or bound['width'] is None:
+        if bound["window"] is None or bound["width"] is None:
             return False
         best = _best_projector_output(self._connected_outputs())
         if best is None:
             return False
-        width, height = best.get('width'), best.get('height')
+        width, height = best.get("width"), best.get("height")
         if not width or not height:
             return False
-        if width != bound['width'] or height != bound['height']:
+        if width != bound["width"] or height != bound["height"]:
             return False
-        if (self.allowed_aspect_ratios
-                and _normalize_ratio(width, height) not in self.allowed_aspect_ratios):
+        if (
+            self.allowed_aspect_ratios
+            and _normalize_ratio(width, height)
+            not in self.allowed_aspect_ratios
+        ):
             return False
         return True
 
@@ -1427,14 +1579,17 @@ class ImageDisplayServer:
         best = _best_projector_output(self._connected_outputs())
         if best is None:
             return
-        width, height = best.get('width'), best.get('height')
+        width, height = best.get("width"), best.get("height")
         if not width or not height:
             return
         bound = self._binding_snapshot()
-        if width != bound['width'] or height != bound['height']:
+        if width != bound["width"] or height != bound["height"]:
             logger.info(
                 "Projector resolution changed from %sx%s to %sx%s; re-binding window",
-                bound['width'], bound['height'], width, height,
+                bound["width"],
+                bound["height"],
+                width,
+                height,
             )
             self._move_window_to_projector()
 
@@ -1442,9 +1597,15 @@ class ImageDisplayServer:
         """Periodic projector detection and idle-timeout check (runs on main pyglet thread)."""
         # max_age=0: this is the authoritative 5s scan, take a fresh reading so
         # a connect/disconnect isn't masked by a cached enumeration.
-        available = _best_projector_output(self._connected_outputs(max_age=0)) is not None
+        available = (
+            _best_projector_output(self._connected_outputs(max_age=0))
+            is not None
+        )
         if available != self._projector_available:
-            logger.info("Projector display %s", "detected" if available else "no longer detected")
+            logger.info(
+                "Projector display %s",
+                "detected" if available else "no longer detected",
+            )
             self._projector_available = available
             if available:
                 self._move_window_to_projector()
@@ -1456,18 +1617,16 @@ class ImageDisplayServer:
             if idle >= PROJECTOR_IDLE_TIMEOUT:
                 logger.info("Projector idle for %.0fs, turning off", idle)
                 self._turn_off_and_confirm()
-    
+
     async def start(self):
         """Start the TCP server."""
         self.server = await asyncio.start_server(
-            self.handle_client,
-            self.host,
-            self.port
+            self.handle_client, self.host, self.port
         )
-        
+
         addr = self.server.sockets[0].getsockname()
         logger.info(f"Server started on {addr[0]}:{addr[1]}")
-        
+
         async with self.server:
             await self.server.serve_forever()
 
@@ -1486,23 +1645,25 @@ class ImageDisplayServer:
             try:
                 screen = find_monitor(
                     display,
-                    monitor_index=self.config.get('monitor_index'),
-                    monitor_size=self.config.get('monitor_size'),
-                    monitor_position=self.config.get('monitor_position'),
+                    monitor_index=self.config.get("monitor_index"),
+                    monitor_size=self.config.get("monitor_size"),
+                    monitor_position=self.config.get("monitor_position"),
                     monitor_auto_detect=self.monitor_auto_detect,
                     allowed_aspect_ratios=self.allowed_aspect_ratios,
                 )
-                screen_aspect = _normalize_ratio(int(screen.width), int(screen.height))
+                screen_aspect = _normalize_ratio(
+                    int(screen.width), int(screen.height)
+                )
                 if screen_aspect in self.allowed_aspect_ratios:
                     return screen
 
                 msg = (
-                    f'Monitor {self._selected_monitor_message(screen)} has aspect ratio '
-                    f'{screen_aspect[0]}:{screen_aspect[1]}; waiting for compositor to apply '
-                    f'saved config (allowed: {allowed})'
+                    f"Monitor {self._selected_monitor_message(screen)} has aspect ratio "
+                    f"{screen_aspect[0]}:{screen_aspect[1]}; waiting for compositor to apply "
+                    f"saved config (allowed: {allowed})"
                 )
             except Exception as e:
-                msg = f'No usable monitor yet ({e}); waiting for display to appear'
+                msg = f"No usable monitor yet ({e}); waiting for display to appear"
 
             if msg != last_msg:
                 logger.info(msg)
@@ -1518,13 +1679,15 @@ class ImageDisplayServer:
         try:
             screen = find_monitor(
                 display,
-                monitor_index=self.config.get('monitor_index'),
-                monitor_size=self.config.get('monitor_size'),
-                monitor_position=self.config.get('monitor_position'),
+                monitor_index=self.config.get("monitor_index"),
+                monitor_size=self.config.get("monitor_size"),
+                monitor_position=self.config.get("monitor_position"),
                 monitor_auto_detect=self.monitor_auto_detect,
                 allowed_aspect_ratios=self.allowed_aspect_ratios,
             )
-            screen_aspect = _normalize_ratio(int(screen.width), int(screen.height))
+            screen_aspect = _normalize_ratio(
+                int(screen.width), int(screen.height)
+            )
             if screen_aspect not in self.allowed_aspect_ratios:
                 raise RuntimeError(
                     f"Monitor {screen.width}x{screen.height} aspect ratio "
@@ -1532,16 +1695,23 @@ class ImageDisplayServer:
                     "compositor may not have applied config yet"
                 )
         except Exception as e:
-            logger.info("Projector window move not ready (%s); will retry in 2s", e)
-            pyglet.clock.schedule_once(lambda dt: self._move_window_to_projector(), 2.0)
+            logger.info(
+                "Projector window move not ready (%s); will retry in 2s", e
+            )
+            pyglet.clock.schedule_once(
+                lambda dt: self._move_window_to_projector(), 2.0
+            )
             return
 
         logger.info(
             "Moving window to projector display: %sx%s@(%s,%s)",
-            screen.width, screen.height, screen.x, screen.y,
+            screen.width,
+            screen.height,
+            screen.x,
+            screen.y,
         )
         new_window = ImageDisplayWindow(screen=screen)
-        old_window = self._binding_snapshot()['window']
+        old_window = self._binding_snapshot()["window"]
         self._record_binding(new_window, screen)
         if old_window is not None:
             old_window.close()
@@ -1554,7 +1724,9 @@ class ImageDisplayServer:
         """Create the display window."""
         display = pyglet.display.get_display()
         self._projector_available = (
-            _best_projector_output(self._connected_outputs(max_age=0)) is not None)
+            _best_projector_output(self._connected_outputs(max_age=0))
+            is not None
+        )
 
         # Query the serial link for the projector's actual power state rather
         # than assuming it's off, the previous run may have left it on.
@@ -1564,11 +1736,14 @@ class ImageDisplayServer:
                 logger.error(
                     "PROJECTOR SERIAL LINK ERROR: could not determine power "
                     "state for %s at startup; assuming off",
-                    self.projector.device_path)
+                    self.projector.device_path,
+                )
             initial_power = False
         self._projector_on = initial_power
-        logger.info("Projector power state at startup (via serial link): %s",
-                    "on" if initial_power else "off")
+        logger.info(
+            "Projector power state at startup (via serial link): %s",
+            "on" if initial_power else "off",
+        )
 
         if self._projector_available:
             # Projector already connected, find a screen with the right aspect ratio.
@@ -1579,15 +1754,19 @@ class ImageDisplayServer:
             # No projector yet, open on whatever screen is available and wait.
             screen = find_monitor(
                 display,
-                monitor_index=self.config.get('monitor_index'),
-                monitor_size=self.config.get('monitor_size'),
-                monitor_position=self.config.get('monitor_position'),
+                monitor_index=self.config.get("monitor_index"),
+                monitor_size=self.config.get("monitor_size"),
+                monitor_position=self.config.get("monitor_position"),
                 monitor_auto_detect=self.monitor_auto_detect,
                 allowed_aspect_ratios=self.allowed_aspect_ratios,
             )
-            logger.warning("No projector display detected at startup; will move window when one appears")
+            logger.warning(
+                "No projector display detected at startup; will move window when one appears"
+            )
             if self._projector_on:
-                pyglet.clock.schedule_once(lambda dt: self._turn_off_and_confirm(), 0)
+                pyglet.clock.schedule_once(
+                    lambda dt: self._turn_off_and_confirm(), 0
+                )
 
         self._record_binding(ImageDisplayWindow(screen=screen), screen)
         logger.info("Display window created")
@@ -1598,10 +1777,14 @@ class ImageDisplayServer:
             pyglet.clock.schedule_once(
                 lambda dt: ImageDisplayWindow._suppress_gnome_overlays(), _delay
             )
-        pyglet.clock.schedule_interval(self._projector_scan, PROJECTOR_SCAN_INTERVAL)
+        pyglet.clock.schedule_interval(
+            self._projector_scan, PROJECTOR_SCAN_INTERVAL
+        )
 
 
-def run_async_server(server: ImageDisplayServer, loop: asyncio.AbstractEventLoop):
+def run_async_server(
+    server: ImageDisplayServer, loop: asyncio.AbstractEventLoop
+):
     """Run the async server in a background thread."""
     asyncio.set_event_loop(loop)
     try:
@@ -1613,25 +1796,32 @@ def run_async_server(server: ImageDisplayServer, loop: asyncio.AbstractEventLoop
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Image Display Server - Display images fullscreen via TCP commands'
+        description="Image Display Server - Display images fullscreen via TCP commands"
     )
-    parser.add_argument('config', nargs='?', default='image-display-config.yaml',
-                        help='Configuration file path (default: image-display-config.yaml)')
-    parser.add_argument('--enum-monitors', action='store_true',
-                        help='Enumerate available monitors and exit')
-    
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default="image-display-config.yaml",
+        help="Configuration file path (default: image-display-config.yaml)",
+    )
+    parser.add_argument(
+        "--enum-monitors",
+        action="store_true",
+        help="Enumerate available monitors and exit",
+    )
+
     args = parser.parse_args()
-    
+
     # Handle monitor enumeration
     if args.enum_monitors:
         enumerate_monitors()
         sys.exit(0)
-    
+
     config_path = args.config
-    
+
     # Load configuration
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
         logger.info(f"Configuration loaded from {config_path}")
     except FileNotFoundError:
@@ -1643,12 +1833,16 @@ def main():
 
     # The serial adapter that controls the projector's power must be
     # explicitly configured, no silent fallback to a guessed device path.
-    if bool(config.get('projector_control', True)) and not config.get('projector_device'):
+    if bool(config.get("projector_control", True)) and not config.get(
+        "projector_device"
+    ):
         logger.error(
             "Config error: 'projector_device' is required in %s. Set it to "
             "the serial port for the adapter connected to the projector "
             "(e.g. /dev/ttyUSB0), or set projector_control: false to disable "
-            "projector power control entirely.", config_path)
+            "projector power control entirely.",
+            config_path,
+        )
         sys.exit(1)
 
     # Create server
@@ -1659,9 +1853,11 @@ def main():
 
     # Start async server in background thread
     loop = asyncio.new_event_loop()
-    server_thread = threading.Thread(target=run_async_server, args=(server, loop), daemon=True)
+    server_thread = threading.Thread(
+        target=run_async_server, args=(server, loop), daemon=True
+    )
     server_thread.start()
-    
+
     # Run pyglet on main thread
     try:
         logger.info("Starting pyglet event loop on main thread")
@@ -1675,5 +1871,5 @@ def main():
         logger.info("Shutdown complete")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

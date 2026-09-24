@@ -43,8 +43,7 @@ class MCU_pulse_pin:
             "stop_pulse_out oid=%d" % (self._oid,), on_restart=True
         )
         self._mcu.add_config_cmd(
-            "set_digital_out pin=%s value=%d"
-            % (self._pin, self._start_value),
+            "set_digital_out pin=%s value=%d" % (self._pin, self._start_value),
             is_init=True,
         )
         self._start_cmd = self._mcu.lookup_command(
@@ -80,7 +79,9 @@ class MCU_pulse_pin:
                 "TRIGGERS_PER_SEC exceeds supported limit (%.1f)"
                 % (self._computed_max_triggers_per_sec,)
             )
-        width_ticks = int((pulse_width_us * self._clock_freq + 999999) // 1000000)
+        width_ticks = int(
+            (pulse_width_us * self._clock_freq + 999999) // 1000000
+        )
         period_ticks = self._mcu.seconds_to_clock(1.0 / triggers_per_sec)
         if period_ticks <= width_ticks:
             raise self._mcu.get_printer().command_error(
