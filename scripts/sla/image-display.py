@@ -6,25 +6,29 @@ Displays images and responds to commands via TCP.
 Run with "python image-display.py <config.yaml>", e.g. a copy of
 image-display-config.yaml.template filled out and placed in
 ~/printer_data/config/image-display-config.yaml.
-Close by pressing ESC.
+Stop with Ctrl+C, or with systemctl when it runs as a service. ESC is
+ignored.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
+import ipaddress
 import json
 import logging
 import math
 import os
 import re
-import select
-import shutil
+import secrets
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -32,6 +36,7 @@ import numpy as np
 import pyglet
 import yaml
 from PIL import Image
+from projector_backends import build_projector_backend
 from sla_video_runtime import VideoRegistry
 
 # Configure logging
@@ -41,17 +46,98 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Remote image redirects are disabled")
+
+
+# Connects to the IP that _validate_image_url() already checked instead of
+# resolving the hostname again, so a DNS rebinding can't swap in a private
+# address after validation. The hostname is still used for Host and TLS SNI.
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, *args, pinned_ip=None, **kwargs):
+        super().__init__(host, *args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        if self._pinned_ip is None:
+            super().connect()
+            return
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, *args, pinned_ip=None, **kwargs):
+        super().__init__(host, *args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        if self._pinned_ip is None:
+            super().connect()
+            return
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_ip):
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPConnection(
+                host, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+        )
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip):
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPSConnection(
+                host, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+            context=self._context,
+        )
+
+
+# Matched as whole words against the EDID monitor name, e.g. "Optoma UHD".
+# Only brands that make projectors and not desktop monitors, so a second
+# monitor on the printer can never outscore the projector.
 PROJECTOR_HINTS = (
     "projector",
     "epson",
-    "benq",
     "optoma",
-    "viewsonic",
     "vivitek",
     "infocus",
-    "nec",
 )
 
+# Set once in main(). On a desktop the server must leave the desktop's own
+# monitors alone, and those are often on HDMI too, so connector type and
+# position can't tell them from a projector. There, only a projector brand in
+# the EDID name counts, unless the config names the monitor, and outputs the
+# desktop has switched off are not switched back on.
+_desktop_session = False
+_monitor_configured = False
+
+# Matched against the connector name, e.g. "eDP-1".
 INTERNAL_DISPLAY_HINTS = (
     "edp",
     "lvds",
@@ -60,9 +146,18 @@ INTERNAL_DISPLAY_HINTS = (
     "built-in",
 )
 
+# Aspect ratios used when the config sets no allowed_aspect_ratios. The window
+# only binds to a projector mode with one of these ratios, the projector is
+# switched to its largest such mode, and with require_exact_resolution each
+# image must match the bound ratio.
+#
+# DCI 4K (256:135, 4096x2160) is deliberately left out. A "4K" projector with
+# a 16:9 3840x2160 image usually gets it from XPR, which pixel-shifts a
+# 1920x1080 DMD, e.g. the Optoma UHD38x. Such projectors often accept a
+# 4096x2160 signal but scale it down to 3840 wide, which blurs every pixel
+# edge of an SLA layer.
 DEFAULT_ALLOWED_ASPECT_RATIOS = {
     (16, 9),
-    (256, 135),  # DCI 4K (4096x2160)
     (4, 3),
     (1, 1),
 }
@@ -78,10 +173,26 @@ PROJECTOR_SCAN_INTERVAL = 5  # seconds between projector detection scans
 PROJECTOR_OFF_CONFIRM_DELAY = (
     5.0  # seconds to wait before verifying the bulb actually turned off
 )
+PROJECTOR_LINK_PROBE_INTERVAL = (
+    60  # seconds between projector serial link health probes
+)
 
 
 def default_video_cache_dir() -> str:
-    """Pick a cache directory that matches common MainsailOS layouts."""
+    """Pick a cache directory that matches common MainsailOS layouts.
+
+    Embedded videos are decoded to this directory once when a print loads,
+    then streamed sequentially by ffmpeg, which mostly hits the page cache.
+    The disk cost is therefore one write per video at print start, not
+    sustained I/O during the print.
+
+    printer_data/cache is preferred because it is where Moonraker-based
+    installs keep caches. /tmp is only a fallback: on Raspberry Pi OS and
+    MainsailOS it lives on the same SD card as printer_data, so it would not
+    avoid the write, and where it is tmpfs (e.g. Debian 13) the extracted
+    videos, up to 128 MB each, would hold RAM until reboot.
+    Set video_cache_dir in the config to override this per printer.
+    """
     candidate_roots = [
         os.environ.get("BIOSLICER_CACHE_ROOT"),
         os.path.join(os.path.expanduser("~"), "printer_data", "cache"),
@@ -178,6 +289,12 @@ def _drm_connected_outputs() -> list[dict]:
         except OSError:
             modes = []
 
+        try:
+            with open(os.path.join(base, "edid"), "rb") as f:
+                monitor_name = _edid_monitor_name(f.read())
+        except OSError:
+            monitor_name = None
+
         # First listed mode is the preferred/current resolution
         preferred_mode = modes[0] if modes else None
         width, height = None, None
@@ -190,6 +307,7 @@ def _drm_connected_outputs() -> list[dict]:
             {
                 "name": connector,
                 "descriptor": connector.lower(),
+                "monitor_name": monitor_name,
                 "enabled": enabled == "enabled",
                 "width": width,
                 "height": height,
@@ -200,21 +318,44 @@ def _drm_connected_outputs() -> list[dict]:
     return outputs
 
 
+def _edid_monitor_name(edid: bytes) -> Optional[str]:
+    """Return the monitor name stored in an EDID block, e.g. "Optoma UHD".
+
+    The name is an optional 18-byte display descriptor with tag 0xFC in the
+    128-byte base block. Its text ends at a newline and is space padded.
+    """
+    if len(edid) < 128 or edid[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return None
+    for offset in (54, 72, 90, 108):
+        descriptor = edid[offset : offset + 18]
+        if descriptor[:3] == b"\x00\x00\x00" and descriptor[3] == 0xFC:
+            text = descriptor[5:].split(b"\n", 1)[0]
+            return text.decode("ascii", "replace").strip() or None
+    return None
+
+
+_HEX_LINE_RE = re.compile(r"^[0-9a-fA-F]+$")
+# A mode line under an output, e.g. "  3840x2160 (0x520) 297.000MHz ...".
+# Interlaced modes ("1920x1080i") don't match.
+_XRANDR_MODE_RE = re.compile(r"^\s+(\d+x\d+)\s+\(0x[0-9a-fA-F]+\)")
+
+
 def _xrandr_connected_outputs() -> list[dict]:
     display = os.environ.get("DISPLAY")
     if not display:
         return []
 
     try:
+        # --verbose adds each output's EDID; --current skips re-probing.
         proc = subprocess.run(
-            ["xrandr", "--current"],
+            ["xrandr", "--verbose", "--current"],
             check=True,
             capture_output=True,
             text=True,
             timeout=5,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("xrandr --current timed out")
+        logger.warning("xrandr --verbose --current timed out")
         return []
     except Exception:
         return []
@@ -224,8 +365,36 @@ def _xrandr_connected_outputs() -> list[dict]:
         r"(?P<w>\d+)x(?P<h>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)"
     )
     outputs = []
-    for line in proc.stdout.splitlines():
-        match = output_re.match(line.strip())
+    current = None
+    edid_hex: Optional[list[str]] = None
+    # The trailing "" ends an EDID block that runs to the end of the output.
+    for line in proc.stdout.splitlines() + [""]:
+        if edid_hex is not None:
+            if _HEX_LINE_RE.match(line.strip()):
+                edid_hex.append(line.strip())
+                continue
+            try:
+                edid = bytes.fromhex("".join(edid_hex))
+            except ValueError:
+                edid = b""
+            current["monitor_name"] = _edid_monitor_name(edid)
+            edid_hex = None
+
+        # Mode and property lines, including EDID, are indented under their
+        # output.
+        if line[:1].isspace():
+            if current is None:
+                continue
+            if line.strip() == "EDID:":
+                edid_hex = []
+                continue
+            mode = _XRANDR_MODE_RE.match(line)
+            if mode and mode.group(1) not in current["modes"]:
+                current["modes"].append(mode.group(1))
+            continue
+
+        current = None
+        match = output_re.match(line)
         if not match:
             continue
 
@@ -233,21 +402,94 @@ def _xrandr_connected_outputs() -> list[dict]:
         height = int(match.group("h"))
         x_pos = int(match.group("x"))
         y_pos = int(match.group("y"))
-        outputs.append(
-            {
-                "name": match.group("name"),
-                "descriptor": match.group("name").lower(),
-                "primary": bool(match.group("primary")),
-                "width": width,
-                "height": height,
-                "geometry": (width, height, x_pos, y_pos),
-            }
-        )
+        current = {
+            "name": match.group("name"),
+            "descriptor": match.group("name").lower(),
+            "monitor_name": None,
+            "primary": bool(match.group("primary")),
+            "width": width,
+            "height": height,
+            "geometry": (width, height, x_pos, y_pos),
+            "modes": [],
+        }
+        outputs.append(current)
 
     return outputs
 
 
+_CONNECTED_LINE_RE = re.compile(
+    r"^(?P<name>\S+)\s+connected(?P<primary>\s+primary)?\s+(?P<rest>.*)$"
+)
+_GEOMETRY_PREFIX_RE = re.compile(r"^\d+x\d+\+-?\d+\+-?\d+")
+
+
+def _activate_modeless_outputs() -> None:
+    """Give any connected-but-modeless output a mode via `xrandr --auto`.
+
+    A projector that powers on after startup has no mode, so it is invisible
+    to _xrandr_connected_outputs() and pyglet. The new output is placed to
+    the right of the primary, because a bare `--auto` puts it at (0,0) where
+    it would overlap another display. A desktop sets up new outputs itself,
+    and one without a mode may have been switched off on purpose, so nothing
+    is done there.
+    """
+    display = os.environ.get("DISPLAY")
+    if not display or _desktop_session:
+        return
+
+    try:
+        proc = subprocess.run(
+            ["xrandr", "--current"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return
+
+    primary = None
+    modeless = []
+    for line in proc.stdout.splitlines():
+        match = _CONNECTED_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        name = match.group("name")
+        if match.group("primary"):
+            primary = name
+        if _GEOMETRY_PREFIX_RE.match(match.group("rest")):
+            continue  # already has an active mode
+        if any(hint in name.lower() for hint in INTERNAL_DISPLAY_HINTS):
+            continue  # never auto-activate what looks like an internal panel
+        modeless.append(name)
+
+    for name in modeless:
+        logger.info(
+            "Output %s is connected but has no active mode; activating it "
+            "with xrandr",
+            name,
+        )
+        args = ["xrandr", "--output", name, "--auto"]
+        if primary and primary != name:
+            args += ["--right-of", primary]
+        try:
+            subprocess.run(args, capture_output=True, timeout=5)
+        except Exception as e:
+            logger.warning("Could not activate output %s: %s", name, e)
+
+
 def _score_projector_output(output: dict) -> int:
+    """Score how likely an output is to be the projector.
+
+    The weights are relative to PROJECTOR_SCORE_THRESHOLD (50). A projector
+    brand in the EDID monitor name, or an internal-panel connector name,
+    decides on its own (+/-300). Otherwise an HDMI output qualifies by
+    connector type alone, DisplayPort needs one more signal (not primary,
+    offset from the origin, or at least 1920x1080), and other connectors need
+    several. DRM outputs carry no primary flag, so they always get the
+    non-primary bonus. On a desktop (see _desktop_session) only the brand
+    qualifies.
+    """
     name = output.get("name", "").lower()
     descriptor = output.get("descriptor", "")
     geometry = output.get("geometry")
@@ -255,8 +497,13 @@ def _score_projector_output(output: dict) -> int:
     score = 0
     if any(hint in descriptor for hint in INTERNAL_DISPLAY_HINTS):
         score -= 300
-    if any(hint in descriptor for hint in PROJECTOR_HINTS):
+    monitor_words = re.findall(
+        r"[a-z0-9]+", (output.get("monitor_name") or "").lower()
+    )
+    if any(hint in monitor_words for hint in PROJECTOR_HINTS):
         score += 300
+    elif _desktop_session and not _monitor_configured:
+        return score
     if name.startswith("hdmi"):
         score += 70
     elif name.startswith("dp"):
@@ -295,6 +542,21 @@ def _best_projector_output(outputs: list[dict]) -> Optional[dict]:
     return max(candidates, key=_score_projector_output)
 
 
+def _largest_allowed_mode(
+    output: dict, allowed_aspect_ratios: set[tuple[int, int]]
+) -> Optional[tuple[int, int]]:
+    """Return the output's largest mode with an allowed aspect ratio."""
+    sizes = []
+    for mode in output.get("modes") or []:
+        match = re.fullmatch(r"(\d+)x(\d+)", mode)
+        if not match:
+            continue
+        size = (int(match.group(1)), int(match.group(2)))
+        if _normalize_ratio(*size) in allowed_aspect_ratios:
+            sizes.append(size)
+    return max(sizes, key=lambda size: size[0] * size[1], default=None)
+
+
 def _match_screen_for_output(output, screens):
     """Map an xrandr/DRM output to the pyglet screen it corresponds to.
 
@@ -323,61 +585,85 @@ def _match_screen_for_output(output, screens):
     return (offset or same_size)[0]
 
 
-def guess_projector_monitor(screens):
-    outputs = _xrandr_connected_outputs() or _drm_connected_outputs()
-    best = None
-    best_score = -1
+def _outputs_overlap(a: dict, b: dict) -> bool:
+    """True if two outputs overlap on the X virtual desktop.
 
+    Anything drawn in the overlap shows on both outputs.
+    """
+    ag = a.get("geometry")
+    bg = b.get("geometry")
+    if not ag or not bg:
+        return False
+    aw, ah, ax, ay = ag
+    bw, bh, bx, by = bg
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def guess_projector_monitor(screens):
+    """Return the connected output to treat as the projector, or None.
+
+    The output must pass the detection score threshold and not overlap any
+    other output. There is no fallback, since a guess could pick a laptop's
+    own screen.
+    """
+    outputs = _xrandr_connected_outputs() or _drm_connected_outputs()
+
+    candidates = []
     for output in outputs:
+        if _score_projector_output(output) < PROJECTOR_SCORE_THRESHOLD:
+            continue
+        overlapping = next(
+            (
+                other
+                for other in outputs
+                if other is not output and _outputs_overlap(output, other)
+            ),
+            None,
+        )
+        if overlapping is not None:
+            logger.error(
+                "Output %s overlaps %s in virtual screen space; refusing to "
+                "treat either as an isolated projector target",
+                output.get("name", "unknown"),
+                overlapping.get("name", "unknown"),
+            )
+            continue
         matched_screen = _match_screen_for_output(output, screens)
         if not matched_screen:
             continue
+        candidates.append((matched_screen, output))
 
-        score = _score_projector_output(output)
-        if score > best_score:
-            best = (matched_screen, output)
-            best_score = score
-
-    if best is not None:
-        screen, output = best
-        logger.info(
-            "Auto-selected monitor: %s %sx%s@(%s,%s)",
-            output.get("name", "unknown"),
-            screen.width,
-            screen.height,
-            screen.x,
-            screen.y,
+    if not candidates:
+        logger.error(
+            "No connected display clears the projector-detection threshold "
+            "without overlapping another display; refusing to select one"
         )
-        return screen
+        return None
 
-    secondary_screens = [s for s in screens if (int(s.x), int(s.y)) != (0, 0)]
-    if secondary_screens:
-        chosen = max(
-            secondary_screens, key=lambda s: int(s.width) * int(s.height)
-        )
-        logger.info(
-            "Auto-selected non-primary monitor fallback: %sx%s@(%s,%s)",
-            chosen.width,
-            chosen.height,
-            chosen.x,
-            chosen.y,
-        )
-        return chosen
-
-    chosen = max(screens, key=lambda s: int(s.width) * int(s.height))
-    logger.info(
-        "Auto-selected largest monitor fallback: %sx%s@(%s,%s)",
-        chosen.width,
-        chosen.height,
-        chosen.x,
-        chosen.y,
+    screen, output = max(
+        candidates, key=lambda pair: _score_projector_output(pair[1])
     )
-    return chosen
+    logger.info(
+        "Auto-selected monitor: %s (%s) %sx%s@(%s,%s)",
+        output.get("name", "unknown"),
+        output.get("monitor_name") or "unknown model",
+        screen.width,
+        screen.height,
+        screen.x,
+        screen.y,
+    )
+    return screen
 
 
 def guess_projector_monitor_with_allowed_aspect(
     screens, allowed_aspect_ratios: set[tuple[int, int]]
 ):
+    """Prefer screens with an allowed aspect ratio, else consider them all.
+
+    The fallback lets a projector that is still in a transient mode be
+    found, so callers can recognize it and wait for the compositor to apply
+    the right mode instead of reporting that no projector is connected.
+    """
     allowed = allowed_aspect_ratios or set()
     if not allowed:
         return guess_projector_monitor(screens)
@@ -435,6 +721,51 @@ def enumerate_monitors():
         print(f"Auto-detect guess: Monitor {idx} ({best['name']})")
 
 
+def _desktop_session_running() -> bool:
+    """Return True if a window manager runs on the X display.
+
+    Every EWMH window manager, including the one a Wayland compositor runs
+    for Xwayland, sets _NET_SUPPORTING_WM_CHECK on the root window. A bare X
+    server started only for the projector has no window manager.
+    """
+    import ctypes
+
+    from pyglet.libs.x11 import xlib
+
+    display = xlib.XOpenDisplay(None)
+    if not display:
+        return False
+    try:
+        # only_if_exists: the atom is never created without a window manager.
+        atom = xlib.XInternAtom(display, b"_NET_SUPPORTING_WM_CHECK", True)
+        if not atom:
+            return False
+        actual_type = ctypes.c_ulong()
+        actual_format = ctypes.c_int()
+        nitems = ctypes.c_ulong()
+        bytes_after = ctypes.c_ulong()
+        data = ctypes.POINTER(ctypes.c_ubyte)()
+        status = xlib.XGetWindowProperty(
+            display,
+            xlib.XDefaultRootWindow(display),
+            atom,
+            0,
+            1,
+            False,
+            0,  # AnyPropertyType
+            ctypes.byref(actual_type),
+            ctypes.byref(actual_format),
+            ctypes.byref(nitems),
+            ctypes.byref(bytes_after),
+            ctypes.byref(data),
+        )
+        if data:
+            xlib.XFree(data)
+        return status == 0 and nitems.value > 0
+    finally:
+        xlib.XCloseDisplay(display)
+
+
 def _inhibit_gnome_suspend():
     """Register a GNOME session inhibitor to block idle-suspend and the suspend dialog.
 
@@ -479,104 +810,6 @@ def _inhibit_gnome_suspend():
     threading.Thread(target=_worker, daemon=True).start()
 
 
-class ProjectorController:
-    """Serial-port power control for projectors that accept ~0000 commands."""
-
-    _POWER_QUERY = b"~0000 ?\r"
-    _READ_TIMEOUT = 2.0  # seconds to wait for a reply to a query
-
-    def __init__(self, device_path: Optional[str], enabled: bool = True):
-        if enabled and not device_path:
-            raise ValueError(
-                "ProjectorController: 'device_path' (the serial adapter "
-                "connected to the projector) is required when projector "
-                "control is enabled"
-            )
-        self.device_path = device_path
-        self.enabled = enabled
-
-    def _transact(
-        self, cmd: bytes, expect_reply: bool = False
-    ) -> Optional[bytes]:
-        """Send cmd over the serial link, optionally waiting for a reply.
-
-        Returns the raw reply bytes, or None if control is disabled, the
-        link could not be opened, or no reply arrived in time (the failure
-        itself is logged as an error so it's impossible to miss).
-        """
-        if not self.enabled:
-            return None
-        try:
-            fd = os.open(self.device_path, os.O_RDWR | os.O_NOCTTY)
-        except OSError as e:
-            logger.error(
-                "PROJECTOR SERIAL LINK ERROR: cannot open %s (%s), check that "
-                "the adapter is plugged in and that 'projector_device' in the "
-                "config points to the right port",
-                self.device_path,
-                e,
-            )
-            return None
-        try:
-            os.write(fd, cmd)
-            logger.info(
-                "Projector command sent to %s: %r", self.device_path, cmd
-            )
-            if not expect_reply:
-                return None
-            ready, _, _ = select.select([fd], [], [], self._READ_TIMEOUT)
-            if not ready:
-                logger.error(
-                    "PROJECTOR SERIAL LINK ERROR: no response from %s within "
-                    "%.1fs, the projector may be unplugged, powered off at "
-                    "the wall, or the adapter is misconfigured",
-                    self.device_path,
-                    self._READ_TIMEOUT,
-                )
-                return None
-            return os.read(fd, 256)
-        except OSError as e:
-            logger.error(
-                "PROJECTOR SERIAL LINK ERROR: communication with %s failed: %s",
-                self.device_path,
-                e,
-            )
-            return None
-        finally:
-            os.close(fd)
-
-    def turn_on(self):
-        logger.info("Turning projector on")
-        self._transact(b"~0000 1\r")
-
-    def turn_off(self):
-        logger.info("Turning projector off")
-        self._transact(b"~0000 0\r")
-
-    def query_power(self) -> Optional[bool]:
-        """Query the projector's current power state over the serial link.
-
-        Returns True if on, False if off, or None if control is disabled or
-        the query failed.
-        """
-        if not self.enabled:
-            return None
-        reply = self._transact(self._POWER_QUERY, expect_reply=True)
-        if reply is None:
-            return None
-        if b"1" in reply:
-            return True
-        if b"0" in reply:
-            return False
-        logger.error(
-            "PROJECTOR SERIAL LINK ERROR: unrecognized power-status reply "
-            "from %s: %r",
-            self.device_path,
-            reply,
-        )
-        return None
-
-
 def find_monitor(
     display,
     monitor_index=None,
@@ -585,6 +818,12 @@ def find_monitor(
     monitor_auto_detect=True,
     allowed_aspect_ratios: Optional[set[tuple[int, int]]] = None,
 ):
+    """Return the screen to display on, or raise.
+
+    Raises if the configured monitor_size/monitor_position/monitor_index
+    doesn't match, or if auto-detect finds no projector. The caller must not
+    open a window in that case.
+    """
     screens = display.get_screens()
 
     if not screens:
@@ -603,8 +842,10 @@ def find_monitor(
                     f"Selected monitor by size {monitor_size} and position {monitor_position}"
                 )
                 return screen
-        logger.warning(
-            f"Monitor with size {monitor_size} and position {monitor_position} not found, using fallback"
+        raise RuntimeError(
+            f"Configured monitor_size {monitor_size} and monitor_position "
+            f"{monitor_position} do not match any connected display; "
+            "refusing to guess another one"
         )
 
     # If only size specified, match size
@@ -616,8 +857,9 @@ def find_monitor(
             ):
                 logger.info(f"Selected monitor by size {monitor_size}")
                 return screen
-        logger.warning(
-            f"Monitor with size {monitor_size} not found, using fallback"
+        raise RuntimeError(
+            f"Configured monitor_size {monitor_size} does not match any "
+            "connected display; refusing to guess another one"
         )
 
     # If only position specified, match position
@@ -629,44 +871,42 @@ def find_monitor(
             ):
                 logger.info(f"Selected monitor by position {monitor_position}")
                 return screen
-        logger.warning(
-            f"Monitor at position {monitor_position} not found, using fallback"
+        raise RuntimeError(
+            f"Configured monitor_position {monitor_position} does not match "
+            "any connected display; refusing to guess another one"
         )
-
-    if monitor_index is None and monitor_auto_detect:
-        if allowed_aspect_ratios:
-            return guess_projector_monitor_with_allowed_aspect(
-                screens, allowed_aspect_ratios
-            )
-        return guess_projector_monitor(screens)
 
     if monitor_index is not None:
         try:
             monitor_index = int(monitor_index)
         except (TypeError, ValueError):
-            logger.warning(
-                "Invalid monitor index %r, using monitor 0", monitor_index
+            raise RuntimeError(f"Invalid monitor_index {monitor_index!r}")
+        if monitor_index < 0 or monitor_index >= len(screens):
+            raise RuntimeError(
+                f"Configured monitor_index {monitor_index} is out of range "
+                f"(0..{len(screens) - 1}); refusing to guess another one"
             )
-            monitor_index = 0
+        logger.info(f"Selected monitor {monitor_index}")
+        return screens[monitor_index]
 
-    # Fallback to index
-    if monitor_index is None:
-        monitor_index = 0
+    if monitor_auto_detect:
+        if allowed_aspect_ratios:
+            screen = guess_projector_monitor_with_allowed_aspect(
+                screens, allowed_aspect_ratios
+            )
+        else:
+            screen = guess_projector_monitor(screens)
+        if screen is None:
+            raise RuntimeError(
+                "No connected display could be verified as the projector; "
+                "refusing to guess another one"
+            )
+        return screen
 
-    if monitor_index < 0:
-        logger.warning(
-            f"Negative monitor index {monitor_index} is invalid, using monitor 0"
-        )
-        monitor_index = 0
-
-    if monitor_index >= len(screens):
-        logger.warning(
-            f"Monitor index {monitor_index} not found, using monitor 0"
-        )
-        monitor_index = 0
-
-    logger.info(f"Selected monitor {monitor_index}")
-    return screens[monitor_index]
+    raise RuntimeError(
+        "monitor_auto_detect is disabled and no monitor_index/monitor_size/"
+        "monitor_position is configured; nothing to select"
+    )
 
 
 # Handle --enum-monitors before pyglet.window is accessed. Accessing pyglet.window
@@ -679,36 +919,16 @@ if __name__ == "__main__" and "--enum-monitors" in sys.argv:
 class ImageDisplayWindow(pyglet.window.Window):
     """Fullscreen window for image display."""
 
-    @staticmethod
-    def _best_mode(screen):
-        """Return the highest-pixel-count mode for this screen, or None to use current."""
-        try:
-            modes = screen.get_modes()
-        except Exception:
-            return None
-        if not modes:
-            return None
-        best = max(modes, key=lambda m: m.width * m.height)
-        logger.info(
-            "Selecting display mode %sx%s (current: %sx%s)",
-            best.width,
-            best.height,
-            screen.width,
-            screen.height,
-        )
-        return best
-
     def __init__(self, screen, **kwargs):
         config = pyglet.gl.Config(
             double_buffer=True, sample_buffers=0, samples=0
         )
-        mode = self._best_mode(screen)
-
+        # The window uses the output's current mode, which the server has
+        # already set with _use_largest_allowed_mode.
         super().__init__(
             caption="Image Display Server",
             fullscreen=True,
             screen=screen,
-            mode=mode,
             vsync=True,
             config=config,
             **kwargs,
@@ -789,6 +1009,12 @@ class ImageDisplayWindow(pyglet.window.Window):
         except Exception as e:
             logger.debug("GNOME overlay suppression failed: %s", e)
 
+    def on_key_press(self, symbol, modifiers):
+        # pyglet's default closes the window on ESC, but the server would keep
+        # using the closed window and every later image would fail. A stray
+        # keypress must not blank the projector mid-print, so ignore it.
+        pass
+
     def on_mouse_enter(self, x, y):
         self.set_mouse_visible(False)
 
@@ -815,6 +1041,12 @@ class ImageDisplayWindow(pyglet.window.Window):
         self, texture, width: int, height: int, h_offset: float = 0.0
     ):
         fb_w, fb_h = self.get_framebuffer_size()
+        # Sprites hold references into pyglet's internal render batch that
+        # plain refcounting doesn't release, so replacing self.current_sprite
+        # without an explicit delete() leaks a texture every call - fatal at
+        # video framerate over a multi-hour print.
+        if self.current_sprite is not None:
+            self.current_sprite.delete()
         self.current_sprite = pyglet.sprite.Sprite(texture, x=0, y=0)
         self.current_sprite.scale = 1
         self.current_sprite.x = int((fb_w - width) / 2 + round(h_offset))
@@ -839,6 +1071,7 @@ class ImageDisplayWindow(pyglet.window.Window):
 
             if rotation:
                 logger.info(f"Rotating image by {rotation} degrees")
+                # PIL rotates counterclockwise; negate so rotation is clockwise.
                 img = img.rotate(-rotation, expand=True)
 
             # Get image data
@@ -886,6 +1119,8 @@ class ImageDisplayWindow(pyglet.window.Window):
 
     def clear_image(self):
         """Clear the current image."""
+        if self.current_sprite is not None:
+            self.current_sprite.delete()
         self.current_sprite = None
 
 
@@ -896,6 +1131,27 @@ class ImageDisplayServer:
         self.config = config
         self.host = config.get("host", "127.0.0.1")
         self.port = config.get("port", 5555)
+        self.auth_token = str(config.get("auth_token", "")).strip()
+        self.max_download_bytes = int(
+            config.get("max_download_bytes", 25 * 1024 * 1024)
+        )
+        self.allow_private_image_urls = bool(
+            config.get("allow_private_image_urls", False)
+        )
+        self.allow_remote_image_urls = bool(
+            config.get("allow_remote_image_urls", False)
+        )
+        if self.max_download_bytes <= 0:
+            raise ValueError("max_download_bytes must be greater than zero")
+        try:
+            loopback_bind = ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            loopback_bind = self.host.lower() == "localhost"
+        if not loopback_bind and not self.auth_token:
+            raise ValueError(
+                "auth_token is required when image-display binds beyond "
+                "localhost"
+            )
         self.require_exact_resolution = bool(
             config.get("require_exact_resolution", True)
         )
@@ -921,12 +1177,13 @@ class ImageDisplayServer:
             hw_decoder=config.get("ffmpeg_hw_decoder"),
         )
 
-        self.projector = ProjectorController(
-            device_path=config.get("projector_device"),
-            enabled=bool(config.get("projector_control", True)),
-        )
+        self.projector = build_projector_backend(config)
         self._projector_available: bool = False
         self._projector_on: bool = False
+        # True from sending power-off until its confirm read finishes. The
+        # projector still reports ON while it cools down, so power readings
+        # in this window are ignored.
+        self._projector_transition_pending: bool = False
         self._has_content: bool = False
         self._last_content_change: Optional[float] = None
 
@@ -940,12 +1197,10 @@ class ImageDisplayServer:
         self._bind_lock = threading.Lock()
         self._current_screen_w: Optional[int] = None
         self._current_screen_h: Optional[int] = None
-        # Note: window (x, y) is deliberately not tracked, it's an arbitrary,
-        # sometimes-unstable offset for an extended second monitor, so the
-        # display is identified by output name + resolution instead.
         # Name of the xrandr/DRM output the window is bound to, recorded at bind
-        # time. Used to identify the display without relying on (x, y), which is
-        # an arbitrary offset when the projector is an extended second monitor.
+        # time. The window's (x, y) is deliberately not tracked: it's an
+        # arbitrary, sometimes-unstable offset for an extended second monitor,
+        # so the display is identified by output name + resolution instead.
         self._bound_output_name: Optional[str] = None
 
         # Short-TTL cache for connected-output enumeration. Readiness polling
@@ -955,6 +1210,10 @@ class ImageDisplayServer:
         self._outputs_cache: Optional[list[dict]] = None
         self._outputs_cache_time: float = 0.0
         self._outputs_lock = threading.Lock()
+
+        # The last (output name, (width, height)) mode switch tried, so a
+        # switch the X server refuses isn't retried on every scan.
+        self._last_mode_request: Optional[tuple[str, tuple[int, int]]] = None
 
     def _connected_outputs(
         self, max_age: float = _OUTPUTS_CACHE_TTL
@@ -1039,7 +1298,12 @@ class ImageDisplayServer:
                 # Parse JSON command
                 try:
                     command = json.loads(data.decode().strip())
-                    logger.debug(f"Received command: {command}")
+                    # Never log the shared auth token or path contents.
+                    logger.debug(
+                        "Received command type=%s keys=%s",
+                        command.get("type"),
+                        sorted(k for k in command if k != "auth_token"),
+                    )
 
                     response = await self.process_command(command)
 
@@ -1065,6 +1329,10 @@ class ImageDisplayServer:
 
     async def process_command(self, command: dict) -> dict:
         """Process a command and return response."""
+        if self.auth_token and not secrets.compare_digest(
+            str(command.get("auth_token", "")), self.auth_token
+        ):
+            return {"status": "error", "message": "Unauthorized"}
         cmd_type = command.get("type", "").upper()
 
         if cmd_type == "DISPLAY_IMAGE":
@@ -1104,8 +1372,7 @@ class ImageDisplayServer:
         prevents an image from being loaded onto a transient fallback mode.
         """
         if not self._projector_available:
-            self.projector.turn_on()
-            self._projector_on = True
+            self._turn_on()
             return {
                 "status": "error",
                 "message": (
@@ -1114,8 +1381,7 @@ class ImageDisplayServer:
                 ),
             }
         if not self._projector_on:
-            self.projector.turn_on()
-            self._projector_on = True
+            self._turn_on()
         if not self._window_bound_to_projector():
             return {
                 "status": "error",
@@ -1358,17 +1624,81 @@ class ImageDisplayServer:
         a failed/timed-out download never leaks an orphaned .tmp file.
         """
         if image_path.startswith(("http://", "https://")):
+            if not self.allow_remote_image_urls:
+                raise ValueError(
+                    "Remote image URLs are disabled; use a local path or "
+                    "enable allow_remote_image_urls explicitly"
+                )
+            pinned_ip = self._validate_image_url(image_path)
             logger.info(f"Downloading image from URL: {image_path}")
             fd, tmp_path = tempfile.mkstemp(suffix=".tmp")
             try:
                 with os.fdopen(fd, "wb") as tmp_file:
-                    with urllib.request.urlopen(image_path, timeout=15) as resp:
-                        shutil.copyfileobj(resp, tmp_file)
+                    # No redirects, and connect to the validated IP (see
+                    # _PinnedHTTPConnection).
+                    scheme = urllib.parse.urlsplit(image_path).scheme
+                    pinned_handler = (
+                        _PinnedHTTPSHandler(pinned_ip)
+                        if scheme == "https"
+                        else _PinnedHTTPHandler(pinned_ip)
+                    )
+                    opener = urllib.request.build_opener(
+                        _NoRedirectHandler(), pinned_handler
+                    )
+                    with opener.open(image_path, timeout=15) as resp:
+                        declared = resp.headers.get("Content-Length")
+                        if (
+                            declared is not None
+                            and int(declared) > self.max_download_bytes
+                        ):
+                            raise ValueError(
+                                "Remote image exceeds max_download_bytes"
+                            )
+                        remaining = self.max_download_bytes + 1
+                        while remaining:
+                            chunk = resp.read(min(64 * 1024, remaining))
+                            if not chunk:
+                                break
+                            tmp_file.write(chunk)
+                            remaining -= len(chunk)
+                        if remaining == 0:
+                            raise ValueError(
+                                "Remote image exceeds max_download_bytes"
+                            )
                 return tmp_path, True
             except Exception:
                 self._cleanup_temp_file(tmp_path)
                 raise
         return image_path, False
+
+    def _validate_image_url(self, image_url: str) -> str:
+        """Validate image_url's host and return the IP to connect to.
+
+        The caller connects to that IP (see _PinnedHTTPConnection).
+        """
+        parsed = urllib.parse.urlsplit(image_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("Only absolute http(s) image URLs are allowed")
+        try:
+            addresses = {
+                ipaddress.ip_address(info[4][0])
+                for info in socket.getaddrinfo(
+                    parsed.hostname, parsed.port or 0, type=socket.SOCK_STREAM
+                )
+            }
+        except (OSError, ValueError) as err:
+            raise ValueError(f"Unable to resolve image URL host: {err}")
+        if not addresses:
+            raise ValueError("Image URL host resolved to no addresses")
+        if not self.allow_private_image_urls and any(
+            not address.is_global for address in addresses
+        ):
+            raise ValueError(
+                "Private, loopback, link-local, and reserved image URLs "
+                "are disabled"
+            )
+        # Every address passed validation; min() just makes the pick stable.
+        return str(min(addresses, key=str))
 
     @staticmethod
     def _cleanup_temp_file(path: str) -> None:
@@ -1473,11 +1803,12 @@ class ImageDisplayServer:
             "last_activity_unix_time": last_activity_unix_time,
             "displays": displays,
             "window": window_info,
+            "projector_link_error": self.projector.last_error,
+            "projector_declined": self.projector.last_declined,
         }
 
     async def handle_projector_on(self) -> dict:
-        self.projector.turn_on()
-        self._projector_on = True
+        self._turn_on()
 
         # "Ready" means the display window is actually bound to the projector
         # output at its native resolution, not merely that a projector-like
@@ -1502,7 +1833,20 @@ class ImageDisplayServer:
 
     async def handle_projector_off(self) -> dict:
         self._turn_off_and_confirm()
-        return {"status": "success", "message": "Projector turned off"}
+        resp = {"status": "success", "message": "Projector turned off"}
+        if self.projector.last_error:
+            resp["projector_link_error"] = self.projector.last_error
+        if self.projector.last_declined:
+            resp["projector_declined"] = self.projector.last_declined
+        return resp
+
+    def _turn_on(self):
+        self.projector.turn_on()
+        self._projector_on = True
+        # The idle timeout counts from the last activity. Without this, a
+        # projector idle for hours before this command is turned straight
+        # back off by the next scan.
+        self._last_content_change = time.monotonic()
 
     def _turn_off_and_confirm(self):
         """Send the power-off command, then verify the bulb actually went out.
@@ -1513,27 +1857,75 @@ class ImageDisplayServer:
         """
         self.projector.turn_off()
         self._projector_on = False
+        self._projector_transition_pending = True
 
         def _confirm():
-            time.sleep(PROJECTOR_OFF_CONFIRM_DELAY)
-            state = self.projector.query_power()
-            if state is True:
-                logger.error(
-                    "PROJECTOR ERROR: power-off command was sent but the "
-                    "projector still reports power ON %.0fs later, the bulb "
-                    "may not have actually turned off; check the projector "
-                    "and the serial adapter",
-                    PROJECTOR_OFF_CONFIRM_DELAY,
-                )
-                self._projector_on = True
-            elif state is None and self.projector.enabled:
-                logger.error(
-                    "PROJECTOR SERIAL LINK ERROR: could not confirm power-off "
-                    "state for %s after sending the off command",
-                    self.projector.device_path,
-                )
+            try:
+                time.sleep(PROJECTOR_OFF_CONFIRM_DELAY)
+                state = self.projector.query_power()
+                if state is True:
+                    logger.error(
+                        "PROJECTOR ERROR: power-off command was sent but the "
+                        "projector still reports power ON %.0fs later, the bulb "
+                        "may not have actually turned off; check the projector "
+                        "and the serial adapter",
+                        PROJECTOR_OFF_CONFIRM_DELAY,
+                    )
+                    self._projector_on = True
+                elif state is None and self.projector.enabled:
+                    if self.projector.last_declined:
+                        # query_power() already logged it, and the link works.
+                        pass
+                    elif self.projector.last_error:
+                        # query_power() already logged the error.
+                        logger.info(
+                            "PROJECTOR: power-off command sent to %s; state "
+                            "could not be independently confirmed (%s)",
+                            self.projector.description,
+                            self.projector.last_error,
+                        )
+                    else:
+                        logger.error(
+                            "PROJECTOR SERIAL LINK ERROR: could not confirm "
+                            "power-off state for %s after sending the off "
+                            "command",
+                            self.projector.description,
+                        )
+            finally:
+                self._projector_transition_pending = False
 
         threading.Thread(target=_confirm, daemon=True).start()
+
+    def start_projector_link_probe(self):
+        """Periodically read the power state so link health stays current.
+
+        last_error only changes when a serial command runs, and nothing talks
+        to the projector while idle. A power-state read changes nothing on
+        the projector.
+        """
+        if not self.projector.enabled:
+            return  # nothing to probe; NullProjectorBackend has no link
+
+        def _probe():
+            while True:
+                time.sleep(PROJECTOR_LINK_PROBE_INTERVAL)
+                self._link_probe_tick()
+
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _link_probe_tick(self):
+        # One probe, separate from the thread loop so tests can call it.
+        was_broken = self.projector.last_error
+        state = self.projector.query_power()
+        # During a power-off the projector still reports ON while cooling.
+        if state is not None and not self._projector_transition_pending:
+            self._projector_on = state
+        if was_broken and not self.projector.last_error:
+            logger.info(
+                "Projector serial link recovered on %s (was: %s)",
+                self.projector.description,
+                was_broken,
+            )
 
     def _window_bound_to_projector(self) -> bool:
         """Authoritative "display ready" signal.
@@ -1593,14 +1985,75 @@ class ImageDisplayServer:
             )
             self._move_window_to_projector()
 
+    def _use_largest_allowed_mode(self):
+        """Switch the projector output to its largest allowed-ratio mode.
+
+        Nothing else picks the projector's mode. The X server may bring it up
+        in a mode whose aspect ratio isn't allowed (e.g. 4096x2160) or below
+        its best resolution, and the window can only bind at the current one.
+        Only possible through xrandr, not on the DRM sysfs fallback.
+        """
+        best = _best_projector_output(self._connected_outputs(max_age=0))
+        if best is None or "geometry" not in best:
+            return
+        target = _largest_allowed_mode(best, self.allowed_aspect_ratios)
+        if target is None or target == (best["width"], best["height"]):
+            return
+        request = (best["name"], target)
+        if request == self._last_mode_request:
+            return
+        self._last_mode_request = request
+        logger.info(
+            "Switching %s from %sx%s to %sx%s, its largest mode with an "
+            "allowed aspect ratio",
+            best["name"],
+            best["width"],
+            best["height"],
+            target[0],
+            target[1],
+        )
+        try:
+            subprocess.run(
+                [
+                    "xrandr",
+                    "--output",
+                    best["name"],
+                    "--mode",
+                    f"{target[0]}x{target[1]}",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not switch %s to %sx%s: %s",
+                best["name"],
+                target[0],
+                target[1],
+                e,
+            )
+        with self._outputs_lock:
+            self._outputs_cache = None
+
     def _projector_scan(self, dt: float):
         """Periodic projector detection and idle-timeout check (runs on main pyglet thread)."""
+        if not self._projector_available:
+            # A projector that just powered on has no mode until something
+            # runs `xrandr --auto` on it.
+            _activate_modeless_outputs()
+
         # max_age=0: this is the authoritative 5s scan, take a fresh reading so
         # a connect/disconnect isn't masked by a cached enumeration.
         available = (
             _best_projector_output(self._connected_outputs(max_age=0))
             is not None
         )
+        if available:
+            self._use_largest_allowed_mode()
+        else:
+            # A projector that comes back gets a fresh mode switch attempt.
+            self._last_mode_request = None
         if available != self._projector_available:
             logger.info(
                 "Projector display %s",
@@ -1609,10 +2062,16 @@ class ImageDisplayServer:
             self._projector_available = available
             if available:
                 self._move_window_to_projector()
+            else:
+                self._close_window()
         elif available:
             self._check_projector_resolution_change()
 
-        if self._projector_on and self._last_content_change is not None:
+        if (
+            self._projector_on
+            and not self._projector_transition_pending
+            and self._last_content_change is not None
+        ):
             idle = time.monotonic() - self._last_content_change
             if idle >= PROJECTOR_IDLE_TIMEOUT:
                 logger.info("Projector idle for %.0fs, turning off", idle)
@@ -1633,8 +2092,8 @@ class ImageDisplayServer:
     def _find_valid_screen(self, display):
         """Return the first screen with an allowed aspect ratio, waiting indefinitely.
 
-        Mutter may briefly present a projector at its native DCI resolution before applying the
-        saved monitors.xml config (e.g. 4096x2160 before switching to 3840x2160). On a cold boot
+        Mutter may briefly present a projector in a mode whose aspect ratio is not allowed
+        before applying the saved monitors.xml config. On a cold boot
         the compositor itself may not be fully ready yet. We loop forever so the service never
         crashes waiting for hardware that just needs more time.
         """
@@ -1670,6 +2129,28 @@ class ImageDisplayServer:
                 last_msg = msg
 
             time.sleep(2)
+
+    def _close_window(self):
+        """Close the render window immediately (main thread).
+
+        Called when the projector output disappears, so the last frame
+        can't show up on another display that takes over its position.
+        """
+        window = self._binding_snapshot()["window"]
+        if window is None:
+            return
+        logger.error(
+            "Projector no longer detected; closing the display window rather "
+            "than leaving it showing on a display that can't be verified as "
+            "the projector."
+        )
+        with self._bind_lock:
+            self.window = None
+            self.bound_aspect_ratio = None
+            self._current_screen_w = None
+            self._current_screen_h = None
+            self._bound_output_name = None
+        window.close()
 
     def _move_window_to_projector(self):
         """Close the current window and reopen on the projector display (main thread)."""
@@ -1715,6 +2196,8 @@ class ImageDisplayServer:
         self._record_binding(new_window, screen)
         if old_window is not None:
             old_window.close()
+        # The output only appears while the projector is powered. Restarting
+        # the idle timer keeps a stale timestamp from turning it straight off.
         self._projector_on = True
         self._last_content_change = time.monotonic()
         _inhibit_gnome_suspend()
@@ -1732,11 +2215,16 @@ class ImageDisplayServer:
         # than assuming it's off, the previous run may have left it on.
         initial_power = self.projector.query_power()
         if initial_power is None:
-            if self.projector.enabled:
+            if (
+                self.projector.enabled
+                and not self.projector.last_error
+                and not self.projector.last_declined
+            ):
+                # query_power() logs the reason when either flag is set.
                 logger.error(
                     "PROJECTOR SERIAL LINK ERROR: could not determine power "
                     "state for %s at startup; assuming off",
-                    self.projector.device_path,
+                    self.projector.description,
                 )
             initial_power = False
         self._projector_on = initial_power
@@ -1747,36 +2235,37 @@ class ImageDisplayServer:
 
         if self._projector_available:
             # Projector already connected, find a screen with the right aspect ratio.
+            self._use_largest_allowed_mode()
             screen = self._find_valid_screen(display)
             logger.info("Projector display available at startup")
             self._last_content_change = time.monotonic()
+            self._record_binding(ImageDisplayWindow(screen=screen), screen)
+            logger.info("Display window created")
+            _inhibit_gnome_suspend()
+            # Retry suppressing GNOME overlays (overview + notifications) several
+            # times during boot, the compositor may reshow them as the desktop
+            # settles.
+            for _delay in (1.0, 3.0, 6.0, 10.0):
+                pyglet.clock.schedule_once(
+                    lambda dt: ImageDisplayWindow._suppress_gnome_overlays(),
+                    _delay,
+                )
         else:
-            # No projector yet, open on whatever screen is available and wait.
-            screen = find_monitor(
-                display,
-                monitor_index=self.config.get("monitor_index"),
-                monitor_size=self.config.get("monitor_size"),
-                monitor_position=self.config.get("monitor_position"),
-                monitor_auto_detect=self.monitor_auto_detect,
-                allowed_aspect_ratios=self.allowed_aspect_ratios,
+            # Never open the window on a screen that isn't the projector.
+            # _projector_scan creates it once a projector is detected.
+            logger.error(
+                "No projector display detected at startup; refusing to open "
+                "a display window on any other screen. Will create one once "
+                "a projector is detected."
             )
-            logger.warning(
-                "No projector display detected at startup; will move window when one appears"
-            )
+            # The idle timeout needs _last_content_change, which is unset
+            # until content is shown, so a lamp left on here would never be
+            # turned off.
             if self._projector_on:
                 pyglet.clock.schedule_once(
                     lambda dt: self._turn_off_and_confirm(), 0
                 )
 
-        self._record_binding(ImageDisplayWindow(screen=screen), screen)
-        logger.info("Display window created")
-        _inhibit_gnome_suspend()
-        # Retry suppressing GNOME overlays (overview + notifications) several times
-        # during boot, the compositor may reshow them as the desktop settles.
-        for _delay in (1.0, 3.0, 6.0, 10.0):
-            pyglet.clock.schedule_once(
-                lambda dt: ImageDisplayWindow._suppress_gnome_overlays(), _delay
-            )
         pyglet.clock.schedule_interval(
             self._projector_scan, PROJECTOR_SCAN_INTERVAL
         )
@@ -1793,8 +2282,23 @@ def run_async_server(
         logger.error(f"Server error: {e}")
 
 
+class _PersistentEventLoop(pyglet.app.EventLoop):
+    """An EventLoop that keeps running after the last window closes.
+
+    The server runs without a window whenever no projector is connected,
+    and the command server must keep running.
+    """
+
+    def on_window_close(self, window):
+        pass
+
+
 def main():
     """Main entry point."""
+    # Must be set before any window closes. Window.close() reads
+    # pyglet.app.event_loop each time.
+    pyglet.app.event_loop = _PersistentEventLoop()
+
     parser = argparse.ArgumentParser(
         description="Image Display Server - Display images fullscreen via TCP commands"
     )
@@ -1831,22 +2335,26 @@ def main():
         logger.error(f"Error loading config: {e}")
         sys.exit(1)
 
-    # The serial adapter that controls the projector's power must be
-    # explicitly configured, no silent fallback to a guessed device path.
-    if bool(config.get("projector_control", True)) and not config.get(
-        "projector_device"
-    ):
-        logger.error(
-            "Config error: 'projector_device' is required in %s. Set it to "
-            "the serial port for the adapter connected to the projector "
-            "(e.g. /dev/ttyUSB0), or set projector_control: false to disable "
-            "projector power control entirely.",
-            config_path,
+    global _desktop_session, _monitor_configured
+    _desktop_session = _desktop_session_running()
+    _monitor_configured = any(
+        config.get(key) is not None
+        for key in ("monitor_index", "monitor_size", "monitor_position")
+    )
+    if _desktop_session and not _monitor_configured:
+        logger.info(
+            "Desktop session detected: only a display with a projector brand "
+            "in its EDID name is used as the projector. Set monitor_index to "
+            "use another display."
         )
-        sys.exit(1)
 
     # Create server
-    server = ImageDisplayServer(config)
+    try:
+        server = ImageDisplayServer(config)
+    except ValueError as e:
+        # Invalid projector config; the message says what is wrong.
+        logger.error("%s", e)
+        sys.exit(1)
 
     # Create window on main thread
     server.create_window()
@@ -1857,6 +2365,8 @@ def main():
         target=run_async_server, args=(server, loop), daemon=True
     )
     server_thread.start()
+
+    server.start_projector_link_probe()
 
     # Run pyglet on main thread
     try:

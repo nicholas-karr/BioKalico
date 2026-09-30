@@ -9,13 +9,17 @@ import json
 import logging
 import os
 import re
+import select
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+MAX_EMBEDDED_VIDEO_BYTES = 128 * 1024 * 1024
+FRAME_READ_TIMEOUT_SECONDS = 30.0
 
 
 def _decode_b64_ascii(value: str) -> str:
@@ -78,6 +82,7 @@ def extract_videos_from_gcode(
     active_expected_bytes = 0
     active_expected_sha256 = ""
     active_chunks: list[str] = []
+    active_b64_chars = 0
     active_old_format = False
 
     output_base = Path(output_dir)
@@ -108,8 +113,14 @@ def extract_videos_from_gcode(
                     )
                 active_name = begin_match.group(1)
                 active_expected_bytes = int(begin_match.group(3))
+                if active_expected_bytes > MAX_EMBEDDED_VIDEO_BYTES:
+                    raise RuntimeError(
+                        f"Embedded payload for {active_name} exceeds "
+                        f"{MAX_EMBEDDED_VIDEO_BYTES} bytes."
+                    )
                 active_expected_sha256 = begin_match.group(4).lower()
                 active_chunks = []
+                active_b64_chars = 0
                 active_old_format = False
                 continue
 
@@ -121,8 +132,14 @@ def extract_videos_from_gcode(
                     )
                 active_name = begin_match_old.group(1)
                 active_expected_bytes = int(begin_match_old.group(3))
+                if active_expected_bytes > MAX_EMBEDDED_VIDEO_BYTES:
+                    raise RuntimeError(
+                        f"Embedded payload for {active_name} exceeds "
+                        f"{MAX_EMBEDDED_VIDEO_BYTES} bytes."
+                    )
                 active_expected_sha256 = ""
                 active_chunks = []
+                active_b64_chars = 0
                 active_old_format = True
                 continue
 
@@ -164,6 +181,7 @@ def extract_videos_from_gcode(
                 active_expected_bytes = 0
                 active_expected_sha256 = ""
                 active_chunks = []
+                active_b64_chars = 0
                 active_old_format = False
                 continue
 
@@ -188,18 +206,37 @@ def extract_videos_from_gcode(
                 active_expected_bytes = 0
                 active_expected_sha256 = ""
                 active_chunks = []
+                active_b64_chars = 0
                 active_old_format = False
                 continue
 
             data_match = data_re.match(line)
             if data_match:
-                active_chunks.append(data_match.group(1))
+                chunk = data_match.group(1)
+                active_chunks.append(chunk)
+                active_b64_chars += len(chunk)
+                if active_b64_chars > (
+                    (active_expected_bytes + 2) // 3 * 4 + 4
+                ):
+                    raise RuntimeError(
+                        f"Embedded payload data exceeds declared length "
+                        f"for {active_name}."
+                    )
                 continue
 
             if active_old_format:
                 data_match_old = data_re_old.match(line)
                 if data_match_old:
-                    active_chunks.append(data_match_old.group(1))
+                    chunk = data_match_old.group(1)
+                    active_chunks.append(chunk)
+                    active_b64_chars += len(chunk)
+                    if active_b64_chars > (
+                        (active_expected_bytes + 2) // 3 * 4 + 4
+                    ):
+                        raise RuntimeError(
+                            f"Embedded payload data exceeds declared length "
+                            f"for {active_name}."
+                        )
 
     if active_name is not None:
         raise RuntimeError(
@@ -236,6 +273,7 @@ class FFmpegVideoStream:
         self.hw_decoder = hw_decoder
         self.process: Optional[subprocess.Popen[bytes]] = None
         self.current_frame = 0
+        self._lock = threading.RLock()
 
         self.metadata = self._probe_video(self.path)
         self.frame_size_bytes = self.metadata.width * self.metadata.height * 4
@@ -316,21 +354,22 @@ class FFmpegVideoStream:
         )
 
     def close(self) -> None:
-        if self.process is None:
-            return
+        with self._lock:
+            if self.process is None:
+                return
 
-        proc = self.process
-        self.process = None
+            proc = self.process
+            self.process = None
 
-        try:
-            proc.terminate()
-            proc.wait(timeout=1.0)
-        except Exception:
             try:
-                proc.kill()
+                proc.terminate()
                 proc.wait(timeout=1.0)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
 
     def _spawn(self, start_frame: int) -> None:
         self.close()
@@ -374,7 +413,9 @@ class FFmpegVideoStream:
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # An undrained stderr PIPE can fill and block ffmpeg. Failures
+            # show up in the exit status anyway.
+            stderr=subprocess.DEVNULL,
         )
         self.current_frame = start_frame
 
@@ -383,8 +424,24 @@ class FFmpegVideoStream:
             return None
 
         out = bytearray()
+        deadline = time.monotonic() + FRAME_READ_TIMEOUT_SECONDS
+        fd = self.process.stdout.fileno()
         while len(out) < self.frame_size_bytes:
-            chunk = self.process.stdout.read(self.frame_size_bytes - len(out))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise RuntimeError(
+                    f"Timed out reading frame for {self.name} after "
+                    f"{FRAME_READ_TIMEOUT_SECONDS:g} seconds."
+                )
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                self.close()
+                raise RuntimeError(
+                    f"Timed out reading frame for {self.name} after "
+                    f"{FRAME_READ_TIMEOUT_SECONDS:g} seconds."
+                )
+            chunk = os.read(fd, self.frame_size_bytes - len(out))
             if not chunk:
                 break
             out.extend(chunk)
@@ -393,43 +450,38 @@ class FFmpegVideoStream:
             return None
 
         if len(out) != self.frame_size_bytes:
-            stderr_tail = ""
-            if self.process.stderr is not None:
-                try:
-                    stderr_tail = self.process.stderr.read().decode(
-                        "utf-8", errors="replace"
-                    )
-                except Exception:
-                    stderr_tail = ""
             raise RuntimeError(
                 f"Incomplete frame read for {self.name}: expected {self.frame_size_bytes}, "
-                f"got {len(out)}. ffmpeg stderr: {stderr_tail.strip()}"
+                f"got {len(out)}."
             )
 
         return bytes(out)
 
     def get_frame(self, frame_index: int) -> bytes:
-        if frame_index < 0:
-            raise ValueError("frame index must be >= 0")
+        with self._lock:
+            if frame_index < 0:
+                raise ValueError("frame index must be >= 0")
 
-        if self.process is None or frame_index < self.current_frame:
-            self._spawn(frame_index)
+            if self.process is None or frame_index < self.current_frame:
+                self._spawn(frame_index)
 
-        while self.current_frame < frame_index:
-            skipped = self._read_exact_frame()
-            if skipped is None:
+            while self.current_frame < frame_index:
+                skipped = self._read_exact_frame()
+                if skipped is None:
+                    raise IndexError(
+                        f"Requested frame {frame_index}, but stream ended at "
+                        f"frame {self.current_frame}."
+                    )
+                self.current_frame += 1
+
+            frame = self._read_exact_frame()
+            if frame is None:
                 raise IndexError(
-                    f"Requested frame {frame_index}, but stream ended at frame {self.current_frame}."
+                    f"Requested frame {frame_index}, but stream ended at "
+                    f"frame {self.current_frame}."
                 )
             self.current_frame += 1
-
-        frame = self._read_exact_frame()
-        if frame is None:
-            raise IndexError(
-                f"Requested frame {frame_index}, but stream ended at frame {self.current_frame}."
-            )
-        self.current_frame += 1
-        return frame
+            return frame
 
     def to_dict(self) -> dict:
         return {
@@ -550,8 +602,16 @@ class VideoRegistry:
                 raise KeyError(f"Video not loaded: {name}")
 
             stream = self.videos[name]
+            # Pin the stream against unload/reload, then release the global
+            # registry lock before the potentially slow ffmpeg read.
+            stream._lock.acquire()
+            width = stream.metadata.width
+            height = stream.metadata.height
+        try:
             frame = stream.get_frame(frame_index)
-            return stream.metadata.width, stream.metadata.height, frame
+            return width, height, frame
+        finally:
+            stream._lock.release()
 
     def load_videos_from_gcode(self, gcode_path: str) -> dict:
         if not gcode_path:

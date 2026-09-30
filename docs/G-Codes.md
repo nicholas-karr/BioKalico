@@ -1000,6 +1000,66 @@ The idle_timeout module is automatically loaded.
 `SET_IDLE_TIMEOUT [TIMEOUT=<timeout>]`: Allows the user to set the
 idle timeout (in seconds).
 
+### [image_display]
+
+The following commands are available when the
+[image_display config section](Config_Reference.md#image_display) is
+enabled. Each command fails if the image display server reports an
+error or does not answer within the configured `timeout`. Every other
+command cancels a pending `PROJECTOR_STANDBY`.
+
+#### PROJECTOR_ON
+`PROJECTOR_ON`: Turn the projector on and wait, for up to
+`startup_timeout` seconds, until the image display window is shown on
+the projector at its native resolution. The printer stays busy while it
+waits. If the wait times out during a print, the print is paused instead
+of failing, and the reason is shown in Mainsail and reported as
+`pause_reason` in the [status](Status_Reference.md#image_display).
+
+#### PROJECTOR_OFF
+`PROJECTOR_OFF`: Turn the projector off. The projector usually needs
+about 30 seconds to turn back on.
+
+#### PROJECTOR_STANDBY
+`PROJECTOR_STANDBY`: Turn the projector off 5 minutes from now, unless
+another command is sent to the image display server first. This avoids
+the startup delay when the projector is needed again soon.
+
+#### DISPLAY_IMAGE
+`DISPLAY_IMAGE PATH=<path> [ROTATION=<0|90|180|270>]`: Show an image
+file on the projector.
+
+#### CLEAR_DISPLAY
+`CLEAR_DISPLAY`: Show black on the projector. It does not operate a
+physical shutter. On a machine with one, use the `PROJECTOR_BLOCK` macro
+(biokalico_extras/printer/sla_video_macros.cfg) instead, after
+redefining it in printer.cfg to show black and close the shutter.
+
+#### LOAD_VIDEO
+`LOAD_VIDEO NAME=<name> PATH=<path>`: Load a video file into the image
+display server under the given name, so its frames can be shown without
+delay.
+
+#### LOAD_VIDEOS_FROM_GCODE
+`LOAD_VIDEOS_FROM_GCODE GCODE_PATH=<path>`: Load every video embedded in
+a G-code file, and report how many were loaded. Each video can also be
+named by its position in the file (`1`, `2`, ...). Waits for up to
+`load_timeout` seconds.
+
+#### SHOW_VIDEO_FRAME
+`SHOW_VIDEO_FRAME NAME=<name> FRAME=<index>`: Show one frame, counting
+from 0, of a loaded video. If the video is not loaded, for example
+because the server restarted, the error says to load the videos again.
+
+#### UNLOAD_VIDEO
+`UNLOAD_VIDEO NAME=<name>`: Unload a loaded video.
+
+#### UNLOAD_ALL_VIDEOS
+`UNLOAD_ALL_VIDEOS`: Unload every loaded video.
+
+#### LIST_VIDEOS
+`LIST_VIDEOS`: Report the loaded videos.
+
 ### [input_shaper]
 
 The following command is enabled if an

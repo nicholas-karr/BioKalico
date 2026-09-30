@@ -1,13 +1,16 @@
 # Image Display Server Configuration
 
 # Network settings
-# The protocol has no authentication, so anything that can reach this port can
-# command the projector and hand it arbitrary local file paths to read. Default
-# to loopback-only; only widen to '0.0.0.0' if klippy/moonraker run on a
-# different host than this server and need to reach it over the LAN, and you
-# trust everything on that network.
+# Listening beyond localhost requires auth_token, set to the same value as
+# auth_token under [image_display] in printer.cfg.
 host: '127.0.0.1'  # Listen on localhost only; set to '0.0.0.0' to listen on all interfaces
 port: 5555          # TCP port number
+# auth_token: 'replace-with-a-long-random-secret'
+max_download_bytes: 26214400
+# Downloading images from URLs is off by default. Private and loopback
+# addresses also need allow_private_image_urls.
+allow_remote_image_urls: false
+allow_private_image_urls: false
 
 # Display settings
 # List your current monitors with "python image-display.py --enum-monitors"
@@ -18,9 +21,12 @@ monitor_auto_detect: true
 # monitor_position: [0, 0]  # Position of the monitor (x, y)
 
 # Projector power control (required unless projector_control is set to false)
+# Projector command set. Only 'optoma' is supported. Other projectors need a
+# new backend in projector_backends.py.
+projector_protocol: 'optoma'
 # Serial adapter connected to the projector's RS232 power port.
 projector_device: '/dev/ttyUSB0'
-# projector_control: false  # uncomment to disable serial power control entirely
+# projector_control: false  # uncomment for a plain screen with no power link to control
 
 # Video pipeline settings
 require_exact_resolution: true

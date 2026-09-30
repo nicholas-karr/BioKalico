@@ -2,17 +2,8 @@
 #
 # Maintains a persistent connection to the image-display server and exposes
 # G-code commands for SLA projector control. Commands block the G-code queue
-# via reactor.pause() polling so that layer timing is exact.
-#
-# Configuration (printer.cfg):
-#   [image_display]
-#   host: 127.0.0.1   # image-display server host
-#   port: 5555        # image-display server port
-#   timeout: 5.0      # per-command timeout in seconds
-#   screen_detect_path: /sys/class/drm/card1-HDMI-A-1/status
-#                       # optional: sysfs DRM status file; when this reads
-#                       # "connected" PROJECTOR_ON succeeds even if the serial
-#                       # command never responds (user pressed physical button)
+# via reactor.pause() polling so that layer timing is exact. The options are
+# described in docs/Config_Reference.md.
 
 import json
 import logging
@@ -47,6 +38,7 @@ class ImageDisplay:
         self.host = config.get("host", "127.0.0.1")
         self.port = config.getint("port", 5555)
         self.timeout = config.getfloat("timeout", 5.0, above=0.0)
+        self.auth_token = config.get("auth_token", "").strip()
         self._load_timeout = config.getfloat("load_timeout", 120.0, above=0.0)
         self.h_offset = config.getfloat("h_offset", 0.0)
 
@@ -68,6 +60,9 @@ class ImageDisplay:
         self._standby_timer = None
         self._standby_waketime: float = 0.0
         self._last_reconnect_warn = 0.0
+        # Why a mid-print PROJECTOR_ON timeout paused the print, shown in
+        # Mainsail. None when the projector is ready.
+        self._pause_reason = None
 
         # Background status cache, populated by a dedicated poll thread so
         # get_status() never blocks the reactor and never contends with the
@@ -234,6 +229,8 @@ class ImageDisplay:
 
     def _send(self, cmd: dict, timeout: float = None) -> dict:
         self._cancel_standby()
+        if self.auth_token:
+            cmd = dict(cmd, auth_token=self.auth_token)
         result_q = queue.Queue()
         self._cmd_queue.put((cmd, result_q))
 
@@ -259,6 +256,16 @@ class ImageDisplay:
             "status": "error",
             "message": "Timed out waiting for image-display server",
         }
+
+    def _send_fire_and_forget(self, cmd: dict) -> None:
+        """Queue cmd for the worker without waiting for a reply.
+
+        For callers that can't block on _send(). Still attaches the auth
+        token.
+        """
+        if self.auth_token:
+            cmd = dict(cmd, auth_token=self.auth_token)
+        self._cmd_queue.put((cmd, queue.Queue()))
 
     def _require_ok(self, gcmd, response: dict):
         if response.get("status") != "success":
@@ -346,15 +353,26 @@ class ImageDisplay:
         """Short human-readable status string for logs / timeout errors."""
         if resp.get("status") != "success":
             return resp.get("message", "no response from image-display server")
+        link_error = resp.get("projector_link_error")
         if not resp.get("projector_available"):
-            return "projector display not connected"
-        window = resp.get("window") or {}
-        if window.get("width"):
-            return (
-                "projector connected, window bound at %sx%s (awaiting native mode)"
-                % (window.get("width"), window.get("height"))
-            )
-        return "projector connected, window not yet bound"
+            base = "projector display not connected"
+        else:
+            window = resp.get("window") or {}
+            if window.get("width"):
+                base = (
+                    "projector connected, window is %sx%s, waiting for it "
+                    "to match the projector's full resolution"
+                    % (window.get("width"), window.get("height"))
+                )
+            else:
+                base = "projector connected, window not yet bound"
+        # The serial power link is separate from the video connection, so
+        # report both.
+        return (
+            "%s; projector serial link: %s" % (base, link_error)
+            if link_error
+            else base
+        )
 
     def cmd_PROJECTOR_ON(self, gcmd):
         self._cancel_standby()
@@ -370,7 +388,7 @@ class ImageDisplay:
             # projector's serial link and nudges the server to bind its window;
             # throttle it so we don't spam the serial adapter on every poll.
             if now - last_kick >= _PROJECTOR_KICK_INTERVAL:
-                self._cmd_queue.put(({"type": "PROJECTOR_ON"}, queue.Queue()))
+                self._send_fire_and_forget({"type": "PROJECTOR_ON"})
                 last_kick = now
 
             # dwell() advances print_time and blocks via _check_pause() until
@@ -395,19 +413,47 @@ class ImageDisplay:
                     window.get("height"),
                     window.get("display_name") or "?",
                 )
+                self._pause_reason = None
                 return
             last_status = self._status_summary(resp)
             logger.info(
                 "image_display: PROJECTOR_ON not ready (%s)", last_status
             )
 
-        raise gcmd.error(
-            "PROJECTOR_ON: timed out after %.0fs waiting for projector display "
-            "(last status: %s)" % (self._startup_timeout, last_status)
+        timeout_message = (
+            "PROJECTOR_ON: timed out after %.0fs waiting for projector "
+            "display (last status: %s)" % (self._startup_timeout, last_status)
         )
 
+        print_stats = self.printer.lookup_object("print_stats", None)
+        is_printing = (
+            print_stats is not None
+            and print_stats.get_status(self.printer.get_reactor().monotonic())[
+                "state"
+            ]
+            == "printing"
+        )
+        if not is_printing:
+            # No print running, so just fail.
+            raise gcmd.error(timeout_message)
+
+        # Mid-print, pause instead of raising. An error raised here would
+        # make virtual_sdcard run on_error_gcode and cancel the print.
+        self._pause_reason = timeout_message
+        logger.error("image_display: %s - pausing the print", timeout_message)
+        gcmd.respond_info(
+            "image_display: %s - pausing the print. Fix the projector, "
+            "then Resume." % timeout_message
+        )
+        gcode = self.printer.lookup_object("gcode")
+        gcode.run_script_from_command("PAUSE")
+
     def cmd_PROJECTOR_OFF(self, gcmd):
-        self._require_ok(gcmd, self._send({"type": "PROJECTOR_OFF"}))
+        resp = self._send({"type": "PROJECTOR_OFF"})
+        self._require_ok(gcmd, resp)
+        link_error = resp.get("projector_link_error")
+        if link_error:
+            gcmd.respond_info("image_display: %s" % link_error)
 
     def cmd_SET_IMAGE_H_OFFSET(self, gcmd):
         self.h_offset = gcmd.get_float("OFFSET")
@@ -524,7 +570,7 @@ class ImageDisplay:
     def _standby_callback(self, eventtime):
         self._standby_timer = None
         self._standby_waketime = 0.0
-        self._cmd_queue.put(({"type": "PROJECTOR_OFF"}, queue.Queue()))
+        self._send_fire_and_forget({"type": "PROJECTOR_OFF"})
         return self.printer.get_reactor().NEVER
 
     def _status_poll_once(self) -> None:
@@ -533,7 +579,10 @@ class ImageDisplay:
             s.settimeout(3.0)
             s.connect((self.host, self.port))
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.sendall(json.dumps({"type": "STATUS"}).encode() + b"\n")
+            command = {"type": "STATUS"}
+            if self.auth_token:
+                command["auth_token"] = self.auth_token
+            s.sendall(json.dumps(command).encode() + b"\n")
             buf = b""
             while b"\n" not in buf:
                 chunk = s.recv(4096)
@@ -572,6 +621,9 @@ class ImageDisplay:
             "last_activity_unix_time": cache.get("last_activity_unix_time"),
             "display_count": len(displays),
             "displays": list(displays),
+            "projector_link_error": cache.get("projector_link_error"),
+            "projector_declined": cache.get("projector_declined"),
+            "pause_reason": self._pause_reason,
             "window_display_name": window.get("display_name", ""),
             "window_width": window.get("width"),
             "window_height": window.get("height"),

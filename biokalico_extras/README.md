@@ -24,7 +24,8 @@ Files are grouped by which host-side component they get deployed into:
 - Embedded videos are loaded from comments via `LOAD_VIDEOS_FROM_GCODE`.
 - External references use `[sla_video_path]` and can be pre-loaded with `SLA_LOAD_LOCAL_VIDEO`.
 - Add your printer-specific movement, projector timing, and exposure control.
-- With systemd, install/start the display server first: `scripts/install-image-display-service.sh`.
+- With systemd, install/start the display server first:
+  `sudo scripts/sla/install-image-display-service.sh`.
 
 ## G-Code Command Reference
 
@@ -41,16 +42,19 @@ Files are grouped by which host-side component they get deployed into:
 
 ### Projector Control
 
-- **`PROJECTOR_ON`**: Turn on the projector.
-- **`PROJECTOR_STANDBY`**: Switch to a black image and start a 5-minute idle timer; turns off the bulb if no further commands arrive. Avoids the full startup delay on next use.
-- **`PROJECTOR_OFF`**: Turn off the projector bulb. Requires >30 s to restart. Does not enter a deep sleep state requiring manual wakeup.
-- **`PROJECTOR_BLOCK`**: Close the projector shutter (if installed). Always switches to a black image first.
+`PROJECTOR_ON`, `PROJECTOR_OFF`, `PROJECTOR_STANDBY` and the other commands
+the SLA macros above are built on come from the `[image_display]` module;
+see [image_display](../docs/G-Codes.md#image_display) in the G-code
+reference.
+
+- **`PROJECTOR_BLOCK`**: Close the projector shutter (if installed). As shipped it only shows black (`SLA_CLEAR`).
 - **`PROJECTOR_UNBLOCK`**: Open the projector shutter.
 
 `PROJECTOR_BLOCK` / `PROJECTOR_UNBLOCK` are stubs: only some machines have a
 physical shutter installed. If yours does, override the `gcode:` in your own
-printer.cfg (after the line that includes this file); machines without a
-shutter can leave the stubs as-is.
+printer.cfg (after the line that includes this file), and start the
+`PROJECTOR_BLOCK` override with `SLA_CLEAR` so it still shows black;
+machines without a shutter can leave the stubs as-is.
 
 ### Process Parameters (BioSlicer)
 

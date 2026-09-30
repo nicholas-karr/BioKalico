@@ -341,6 +341,35 @@ is always available):
   been in the "Printing" state (as tracked by the idle_timeout
   module).
 
+## image_display
+
+The following information is available in the
+[image_display](Config_Reference.md#image_display) object. Values other
+than `pause_reason`, `standby_armed` and `standby_in_seconds` come from
+the image display server, which is asked every 5 seconds.
+- `projector_on`: True when the projector is on.
+- `projector_available`: True when the projector's video output is
+  connected.
+- `display_ready`: True when the image display window is shown on the
+  projector at its native resolution.
+- `has_content`: True when an image or video frame is shown, False when
+  the display is black.
+- `idle_seconds`, `last_activity_unix_time`: How long ago, and when (as
+  a Unix timestamp), the shown content last changed, or `None`.
+- `display_count`, `displays`: The number of connected video outputs,
+  and a list with the `name`, `width` and `height` of each.
+- `window_display_name`, `window_width`, `window_height`: The output
+  the image display window is on and the window's size.
+- `projector_link_error`: Why the projector's serial link failed, or
+  `None` when it works.
+- `projector_declined`: The last power command the projector refused,
+  for example turning off while already off, or `None`.
+- `pause_reason`: Why `PROJECTOR_ON` paused the print, or `None`.
+- `standby_armed`, `standby_in_seconds`: Whether `PROJECTOR_STANDBY`
+  will turn the projector off, and in how many seconds.
+- `status_stale`: True when the server has not answered for 15 seconds,
+  so the values from it may be out of date.
+
 ## led
 
 The following information is available for each `[led led_name]`,

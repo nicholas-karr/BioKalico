@@ -6435,6 +6435,49 @@ trigger_to_bottom_z: 0.25
 #   samples_tolerance_retries). The default is 0.100mm.
 ```
 
+### [image_display]
+
+SLA projector control through the BioKalico image display server
+(scripts/sla/image-display.py), which shows images and video frames on
+the projector and switches the projector's power over its serial link.
+Commands wait for the server to answer, so exposure timing is kept in
+step with motion. See the [g-code commands](G-Codes.md#image_display)
+and [status reference](Status_Reference.md#image_display).
+
+```
+[image_display]
+#host: 127.0.0.1
+#   The address of the image display server. The default is 127.0.0.1.
+#port: 5555
+#   The port of the image display server. The default is 5555.
+#auth_token:
+#   A shared secret sent with every command. It must match auth_token
+#   in the server's own config file, and is required when the server
+#   listens on anything other than localhost. The default is no token.
+#timeout: 5.0
+#   The time, in seconds, to wait for the server to answer a command.
+#   The default is 5 seconds.
+#load_timeout: 120.0
+#   The time, in seconds, to wait for LOAD_VIDEOS_FROM_GCODE. The
+#   server reads the whole G-code file and decodes, checks and saves
+#   every video embedded in it, so large files can take a long time.
+#   The default is 120 seconds.
+#startup_timeout: 300.0
+#   The time, in seconds, PROJECTOR_ON waits for the projector's
+#   display to be ready. The default is 300 seconds.
+#h_offset: 0.0
+#   The horizontal offset, in pixels, of every image and video frame.
+#   The default is 0.
+#screen_detect_path:
+#   The sysfs DRM status file of the projector's video output, for
+#   example /sys/class/drm/card1-HDMI-A-2/status. While PROJECTOR_ON
+#   waits, it turns on any connected but inactive video output, and
+#   when this option is set it only does so once this file reads
+#   "connected". Find the right file with:
+#   cat /sys/class/drm/card*-*/status
+#   The default is not to check the file.
+```
+
 ### [trad_rack]
 
 Trad Rack multimaterial system support. See the following documents from the

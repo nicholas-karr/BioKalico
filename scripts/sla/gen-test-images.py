@@ -99,6 +99,10 @@ def make_blue_image(width: int, height: int) -> Image.Image:
     return Image.new("RGB", (width, height), (0, 80, 220))
 
 
+def make_white_image(width: int, height: int) -> Image.Image:
+    return Image.new("RGB", (width, height), (255, 255, 255))
+
+
 def make_checkerboard_image(
     width: int, height: int, regions: int = 8
 ) -> Image.Image:
@@ -291,7 +295,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pattern",
-        choices=["blue", "checkerboard", "nested-squares", "dense-text"],
+        choices=[
+            "blue",
+            "white",
+            "checkerboard",
+            "nested-squares",
+            "dense-text",
+        ],
         default="checkerboard",
         help="Test image to generate",
     )
@@ -359,6 +369,10 @@ def main():
         image_path = os.path.join(outdir, "blue.png")
         print(f"Generating {w}x{h} solid blue…")
         make_blue_image(w, h).save(image_path)
+    elif args.pattern == "white":
+        image_path = os.path.join(outdir, "white.png")
+        print(f"Generating {w}x{h} solid white…")
+        make_white_image(w, h).save(image_path)
     elif args.pattern == "checkerboard":
         image_path = os.path.join(outdir, "checkerboard.png")
         print(
