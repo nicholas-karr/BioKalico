@@ -1,0 +1,24 @@
+# Test case for the tools_calibrate extra. The MCU is simulated, so a probing
+# move always ends at its far limit; this checks that every command runs and
+# reports, not that the numbers are meaningful.
+CONFIG tools_calibrate.cfg
+DICTIONARY atmega2560.dict
+
+G28
+G1 F6000 X100 Y100 Z10
+
+ASSERT TEST='{printer.tools_calibrate.last_result == none}'
+TOOL_CALIBRATE_QUERY_PROBE
+ASSERT TEST='{printer.tools_calibrate.calibration_probe_inactive}'
+
+TOOL_LOCATE_SENSOR
+ASSERT TEST='{printer.tools_calibrate.last_result is not none}'
+ASSERT TEST='{printer.tools_calibrate.last_x_result == printer.tools_calibrate.last_result[0]}'
+
+TOOL_CALIBRATE_TOOL_OFFSET
+TOOL_CALIBRATE_SAVE_TOOL_OFFSET MACRO=CALIBRATION_RESULT VARIABLE=offset
+
+# Probing the tool's own Z probe stages a z_offset for the [probe] section
+TOOL_CALIBRATE_PROBE_OFFSET
+ASSERT TEST='{printer.tools_calibrate.last_probe_offset != 0.0}'
+ASSERT TEST='{"z_offset" in printer.configfile.save_config_pending_items.probe}'

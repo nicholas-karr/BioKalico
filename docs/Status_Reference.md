@@ -681,8 +681,15 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot
 
 The following information is available in the
 [tools_calibrate](Config_Reference.md#tools_calibrate) object:
-- `sensor_location`: Once calibrated, the location of the sensor
-- `last_result`: The last tool calibration result
+- `last_result`: The last tool calibration result as `[x, y, z]`: the sensor
+  location after `TOOL_LOCATE_SENSOR`, or the tool offset relative to the
+  initial tool after `TOOL_CALIBRATE_TOOL_OFFSET`. `None` until one has run,
+  and cleared when the stepper motors are disabled.
+- `last_x_result`, `last_y_result`, `last_z_result`: The individual components
+  of `last_result`, or `None` when there is no result.
+- `last_probe_offset`: The `z_offset` computed by the last
+  `TOOL_CALIBRATE_PROBE_OFFSET`. `0.0` until one has run, and reset when the
+  stepper motors are disabled.
 - `calibration_probe_inactive`: Status of the calibration probe as of
   the last `TOOL_CALIBRATE_QUERY_PROBE`
 

@@ -6403,12 +6403,15 @@ spread: 5
 #spread_x:
 #spread_y:
 #   X and Y travel distance around the probe
-#initial_spread:
 #initial_spread_x:
 #initial_spread_y:
-#   X and Y travel distance for the initial probe locating moves
+#   X and Y travel distance for the initial probe locating moves. The
+#   default is spread_x and spread_y respectively.
 lower_z: 1.0
 #   Distance to lower in Z for contact with the sides of the probe
+#lift_z: 1.0
+#   Distance to lift in Z before moving between probing positions. The
+#   default is 1.0mm.
 speed: 2
 #   The speed (in mm/sec) to retract between probes
 lift_speed: 4
@@ -6418,7 +6421,12 @@ final_lift_z: 6
 #   height variance between tools
 trigger_to_bottom_z: 0.25
 #   Offset from probe trigger to vertical motion bottoms out.
-#   decrease if the nozzle is too high, increase if too low.
+#   decrease if the nozzle is too high, increase if too low. Also added
+#   to the result of TOOL_CALIBRATE_PROBE_OFFSET.
+#probe: probe
+#   The name of the probe object (for example "probe" or
+#   "tool_probe T0") whose z_offset is calibrated by
+#   TOOL_CALIBRATE_PROBE_OFFSET. The default is "probe".
 #samples: 1
 #   The number of times to probe each point. The probed z-values will
 #   be averaged. The default is to probe 1 time.
@@ -6433,6 +6441,10 @@ trigger_to_bottom_z: 0.25
 #   samples. If this tolerance is exceeded then either an error is
 #   reported or the attempt is restarted (see
 #   samples_tolerance_retries). The default is 0.100mm.
+#samples_tolerance_retries: 0
+#   The number of times to retry probing a point if the samples exceed
+#   samples_tolerance. The default is 0, which reports an error
+#   instead of retrying.
 ```
 
 ### [firmware_build]

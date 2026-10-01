@@ -1940,6 +1940,20 @@ Save the last calibration result to a macro variable.
 `TOOL_CALIBRATE_SAVE_TOOL_OFFSET SECTION= ATTRIBUTE= [VALUE="{x:0.6f}, {y:0.6f}, {z:0.6f}"]`:
 Save the last calibration result to a field in your configuration. Calibration data saved this way will not take effect until after a `RESTART` of your printer.
 
+The command fails with an error if no calibration result exists yet, or if
+neither `MACRO` nor `SECTION` is given.
+
+#### TOOL_CALIBRATE_PROBE_OFFSET
+`TOOL_CALIBRATE_PROBE_OFFSET [PROBE=<probe_name>]`: Calibrate the `z_offset` of
+a tool's own Z probe against its nozzle tip. Position the tool over the
+calibration probe and run the command. The nozzle first touches the calibration
+probe, then the tool's probe is lowered until it triggers. The resulting
+`z_offset` is reported (it includes `trigger_to_bottom_z` from the
+[tools_calibrate config section](Config_Reference.md#tools_calibrate)), staged
+for the config section named by `PROBE` (default: the `probe` option of the
+tools_calibrate section), and the toolhead returns to its starting position.
+Run `SAVE_CONFIG` to write the value and restart.
+
 ### [trad_rack]
 
 The following commands are available when the
