@@ -1,0 +1,47 @@
+# Ambient recorder config. The installer copies this to
+# ~/printer_data/config/ambient-recorder-config.yaml if it isn't there yet.
+#
+# The ambient recorder films the printer all day, whether or not it is
+# printing, and saves one video per day. The videos appear in Mainsail's
+# Timelapse tab. See scripts/ambient_recorder/README.md.
+#
+# One "key: value" setting per line. After editing, run:
+#   scripts/biokalico-installer.sh update ambient-recorder
+
+# true to record. Off by default.
+enabled: false
+
+# Camera snapshot URL. The default is crowsnest's first camera.
+snapshot_url: http://127.0.0.1:8080/snapshot
+
+# Real-time seconds between captured frames. 10s = 8640 frames/day.
+capture_interval_seconds: 10
+
+# Folder for daily videos (YYYY-MM-DD.mp4). Today's recording is in its tmp/
+# folder. Keep it under ~/printer_data/timelapse/ to see it in Mainsail.
+output_dir: ~/printer_data/timelapse/ambient/
+
+# Playback frames per second. At 1, each captured frame shows for one second,
+# so a day at the default interval plays for about 2.4 hours. Does not change
+# file size.
+output_framerate: 1
+
+# Video quality: lower is better quality and bigger files. Try 23 for
+# better quality.
+crf: 28
+
+# Encoder speed. Slower presets make slightly smaller files but use more CPU.
+preset: veryfast
+
+# Most footage lost if power is cut. Lower loses less but makes bigger files.
+keyframe_interval_seconds: 60
+
+# Path to the ffmpeg binary. Leave commented out to use the ffmpeg found on
+# PATH.
+#ffmpeg_binary_path: /usr/bin/ffmpeg
+
+# Seconds to wait for one snapshot before skipping it.
+snapshot_timeout_seconds: 5
+
+# Daily videos older than this many days are deleted. 0 keeps them forever.
+retention_days: 30

@@ -41,7 +41,7 @@ CROWSNEST_DIR="${CROWSNEST_DIR:-$KLIPPER_DIR/deps/crowsnest}"
 MAINSAIL_CONFIG_DIR="${MAINSAIL_CONFIG_DIR:-$HOME/mainsail-config}"
 MAINSAIL_CONFIG_ORIGIN="${MAINSAIL_CONFIG_ORIGIN:-https://github.com/mainsail-crew/mainsail-config.git}"
 
-ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest)
+ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest ambient-recorder)
 
 log() { echo "==> $*"; }
 warn() { echo "==> WARNING: $*" >&2; }
@@ -623,6 +623,67 @@ sync_crowsnest() {
     restart_service crowsnest
 }
 
+### ambient-recorder #########################################################
+
+# Daily camera timelapse (see scripts/ambient_recorder/). The service is
+# always installed but only enabled when `enabled:` in its config is true.
+sync_ambient_recorder() {
+    local script="$KLIPPER_DIR/scripts/ambient_recorder/ambient_recorder.py"
+    local cfg="$PRINTER_DATA/config/ambient-recorder-config.yaml"
+    local unit=/etc/systemd/system/ambient-recorder.service
+
+    # Never overwrite an existing config.
+    if [[ ! -e "$cfg" ]]; then
+        log "ambient-recorder: seeding $cfg from bio_config/ambient-recorder-config.yaml.example"
+        mkdir -p "$PRINTER_DATA/config"
+        cp "$KLIPPER_DIR/bio_config/ambient-recorder-config.yaml.example" "$cfg"
+    fi
+
+    # Only replace the unit file if it changed. Restart=on-failure because
+    # the daemon exits 0 when its config says disabled.
+    local tmp_unit
+    tmp_unit="$(mktemp)"
+    cat > "$tmp_unit" <<EOF
+[Unit]
+Description=BioKalico ambient camera recorder (daily H.264 timelapse)
+After=network-online.target crowsnest.service
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=$(id -un)
+Environment=CONFIG_PATH=$cfg
+ExecStart=/usr/bin/python3 $script
+Restart=on-failure
+RestartSec=10
+EOF
+    if ! sudo cmp -s "$tmp_unit" "$unit" 2>/dev/null; then
+        log "ambient-recorder: installing/updating ambient-recorder.service"
+        sudo cp "$tmp_unit" "$unit"
+        sudo systemctl daemon-reload
+    fi
+    rm -f "$tmp_unit"
+
+    # Toggle to match the config's enabled flag.
+    local enabled
+    enabled="$(grep -E '^[[:space:]]*enabled[[:space:]]*:' "$cfg" 2>/dev/null \
+        | head -1 | sed -E 's/.*:[[:space:]]*//; s/#.*//; s/[[:space:]]//g' \
+        | tr '[:upper:]' '[:lower:]')"
+    case "$enabled" in
+        true | 1 | yes | on)
+            log "ambient-recorder: enabled in config, starting service"
+            sudo systemctl enable --now ambient-recorder
+            ;;
+        *)
+            log "ambient-recorder: disabled in config (default), unit installed but off"
+            sudo systemctl disable --now ambient-recorder 2>/dev/null || true
+            ;;
+    esac
+}
+
 ### OOM hardening #############################################################
 
 # Keeps a memory shortage from killing cloudflared (remote access) or the
@@ -727,6 +788,7 @@ sync_component() {
         mainsail) sync_mainsail ;;
         mainsail-config) sync_mainsail_config ;;
         crowsnest) sync_crowsnest ;;
+        ambient-recorder) sync_ambient_recorder ;;
         *) echo "Unknown component: $1 (expected one of: ${ALL_COMPONENTS[*]})" >&2; exit 2 ;;
     esac
 }
@@ -750,9 +812,11 @@ ensure_services_running() {
     # installed and isn't already running gets one more restart attempt,
     # in a single pass with everything else already settled (much less
     # contention than mid-install).
+    # Skip disabled services (ambient-recorder is disabled by default).
     local svc failed=()
-    for svc in klipper moonraker crowsnest nginx; do
+    for svc in klipper moonraker crowsnest nginx ambient-recorder; do
         service_unit_exists "$svc" || continue
+        sudo systemctl is-enabled --quiet "$svc" 2>/dev/null || continue
         if ! sudo systemctl is-active --quiet "$svc"; then
             log "ensure_services_running: $svc.service isn't up yet, restarting"
             if ! sudo systemctl restart "$svc"; then
