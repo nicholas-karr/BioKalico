@@ -26,6 +26,9 @@
 #
 # Called with no arguments (Moonraker's install_script convention), this
 # defaults to `update` with no component filter, i.e. sync everything.
+#
+# `install` asks whether the printer has an SLA projector. Set
+# BIOKALICO_SLA_PROJECTOR=yes or =no to answer without the prompt.
 
 set -euo pipefail
 
@@ -33,6 +36,7 @@ BIOKALICO_ORIGIN="${BIOKALICO_ORIGIN:-https://github.com/nicholas-karr/BioKalico
 KLIPPER_DIR="${KLIPPER_DIR:-$HOME/klipper}"
 KLIPPY_ENV="${KLIPPY_ENV:-$HOME/klippy-env}"
 PRINTER_DATA="${PRINTER_DATA:-$HOME/printer_data}"
+BIOKALICO_SLA_PROJECTOR="${BIOKALICO_SLA_PROJECTOR:-}"
 
 MOONRAKER_DIR="${MOONRAKER_DIR:-$KLIPPER_DIR/deps/moonraker}"
 MAINSAIL_DIR="${MAINSAIL_DIR:-$KLIPPER_DIR/deps/mainsail}"
@@ -41,7 +45,7 @@ CROWSNEST_DIR="${CROWSNEST_DIR:-$KLIPPER_DIR/deps/crowsnest}"
 MAINSAIL_CONFIG_DIR="${MAINSAIL_CONFIG_DIR:-$HOME/mainsail-config}"
 MAINSAIL_CONFIG_ORIGIN="${MAINSAIL_CONFIG_ORIGIN:-https://github.com/mainsail-crew/mainsail-config.git}"
 
-ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest ambient-recorder)
+ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest ambient-recorder image-display)
 
 log() { echo "==> $*"; }
 warn() { echo "==> WARNING: $*" >&2; }
@@ -684,6 +688,115 @@ EOF
     esac
 }
 
+### image-display ##############################################################
+
+# SLA projector display server (see scripts/sla/). Printers without a
+# projector must not get it: it can set up lightdm autologin, and on a desktop
+# it would take over an HDMI monitor.
+
+# Whether printer.cfg, or a file it includes, has an [image_display] section.
+# Follows [include] lines the way klippy/configfile.py does, so config files
+# that Klipper does not load are ignored.
+config_has_image_display() {
+    local printer_cfg="$PRINTER_DATA/config/printer.cfg"
+    [[ -f "$printer_cfg" ]] || return 1
+    python3 - "$printer_cfg" <<'EOF'
+import configparser, glob, os, sys
+
+def has_image_display(path, visited):
+    path = os.path.abspath(path)
+    if path in visited:
+        return False
+    visited.add(path)
+    try:
+        with open(path) as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return False
+    for line in lines:
+        line = line.split("#", 1)[0]
+        mo = configparser.RawConfigParser.SECTCRE.match(line)
+        header = mo and mo.group("header")
+        if header == "image_display":
+            return True
+        if header and header.startswith("include "):
+            spec = os.path.join(os.path.dirname(path), header[8:].strip())
+            for name in sorted(glob.glob(spec, recursive=True)):
+                if has_image_display(name, visited):
+                    return True
+    return False
+
+sys.exit(0 if has_image_display(sys.argv[1], set()) else 1)
+EOF
+}
+
+# Asked at the start of `install` so the question doesn't wait until the end
+# of a long build. Skipped when nothing is left to decide or nobody is at the
+# terminal (Moonraker's updater, scripted installs).
+ask_sla_projector() {
+    [[ -z "$BIOKALICO_SLA_PROJECTOR" && -t 0 ]] || return 0
+    if service_unit_exists bioslicer-image-display || config_has_image_display; then
+        return 0
+    fi
+    local answer
+    echo
+    echo "Does this printer have an SLA projector? Answering yes sets up the"
+    echo "projector display server, and a graphical login (lightdm) if this"
+    echo "host has none. You can also set it up later; see scripts/sla/README.md."
+    read -r -p "SLA projector? [y/N] " answer
+    case "$answer" in
+        [Yy]*) BIOKALICO_SLA_PROJECTOR=yes ;;
+        *) BIOKALICO_SLA_PROJECTOR=no ;;
+    esac
+}
+
+sync_image_display() {
+    local sla_dir="$KLIPPER_DIR/scripts/sla"
+    local cfg="$PRINTER_DATA/config/image-display-config.yaml"
+
+    # An installed service is kept up to date, whatever set it up.
+    if [[ "$BIOKALICO_SLA_PROJECTOR" != yes ]] \
+        && ! service_unit_exists bioslicer-image-display \
+        && ! config_has_image_display; then
+        log "image-display: no SLA projector set up, skipping"
+        return
+    fi
+
+    # Never overwrite an existing config.
+    if [[ ! -e "$cfg" ]]; then
+        log "image-display: seeding $cfg from scripts/sla/image-display-config.yaml.template"
+        cp "$sla_dir/image-display-config.yaml.template" "$cfg"
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        log "image-display: installing system packages"
+        sudo apt-get update -qq
+        # ffmpeg/ffprobe decode SLA videos, xrandr picks the projector mode,
+        # and pyglet needs Mesa for its OpenGL context.
+        sudo apt-get install --yes \
+            ffmpeg x11-xserver-utils libgl1-mesa-dri libglx-mesa0 libgles2
+    else
+        warn "image-display: apt-get not found, skipping package install"
+    fi
+
+    # The server draws on X display :0. A host with a display manager or a
+    # bare xorg.service already has one; otherwise setup-display.sh sets up
+    # lightdm autologin before installing the service.
+    if service_unit_exists display-manager || service_unit_exists xorg; then
+        sudo env SERVICE_USER="$(id -un)" CONFIG_PATH="$cfg" \
+            bash "$sla_dir/install-image-display-service.sh"
+    else
+        log "image-display: no X server found, setting up lightdm"
+        sudo apt-get install --yes lightdm
+        sudo env SERVICE_USER="$(id -un)" bash "$sla_dir/setup-display.sh"
+    fi
+
+    # Losing the projector server (or the X server it draws on) mid-print
+    # blanks the projector.
+    protect_service_from_oom bioslicer-image-display
+    restart_service bioslicer-image-display
+}
+
 ### OOM hardening #############################################################
 
 # Keeps a memory shortage from killing cloudflared (remote access) or the
@@ -774,7 +887,7 @@ harden_oom_protections() {
     protect_service_from_oom cloudflared
     protect_service_from_oom klipper
     protect_service_from_oom moonraker
-    # The X server the SLA projector draws on.
+    # The X server the SLA projector draws on (see sync_image_display).
     protect_service_from_oom xorg
     install_systemd_oomd
 }
@@ -789,6 +902,7 @@ sync_component() {
         mainsail-config) sync_mainsail_config ;;
         crowsnest) sync_crowsnest ;;
         ambient-recorder) sync_ambient_recorder ;;
+        image-display) sync_image_display ;;
         *) echo "Unknown component: $1 (expected one of: ${ALL_COMPONENTS[*]})" >&2; exit 2 ;;
     esac
 }
@@ -814,7 +928,7 @@ ensure_services_running() {
     # contention than mid-install).
     # Skip disabled services (ambient-recorder is disabled by default).
     local svc failed=()
-    for svc in klipper moonraker crowsnest nginx ambient-recorder; do
+    for svc in klipper moonraker crowsnest nginx ambient-recorder bioslicer-image-display; do
         service_unit_exists "$svc" || continue
         sudo systemctl is-enabled --quiet "$svc" 2>/dev/null || continue
         if ! sudo systemctl is-active --quiet "$svc"; then
@@ -832,6 +946,7 @@ ensure_services_running() {
 }
 
 cmd_install() {
+    ask_sla_projector
     # Pull this repo first so sync_submodules checks out the new revisions.
     sync_klipper
     sync_submodules
@@ -894,7 +1009,7 @@ main() {
         update) cmd_update "$@" ;;
         status) cmd_status ;;
         -h|--help)
-            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
             ;;
         *)
             echo "Unknown command: $cmd (expected install, update, or status)" >&2

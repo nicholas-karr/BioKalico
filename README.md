@@ -36,8 +36,8 @@ source, a Klipper extra, a Moonraker component, or just a `.cfg` file.
   shared-password login) built into BioKalico's own forks are wired up via
   the `.conf` fragments in `biokalico_extras/`.
 - [scripts/sla/README.md](scripts/sla/README.md): the TCP display server
-  that drives the projector: setup, systemd service, and the G-code command
-  reference (`SLA_SHOW_FRAME`, `SLA_LOAD_GCODE_VIDEOS`, etc.).
+  that drives the projector: configuration, troubleshooting, and setting it
+  up without the installer.
 - [klippy/extras/VENDORED.md](klippy/extras/VENDORED.md): the
   `toolchanger`/`tool`/`tool_probe` extras vendored in from
   [klipper-toolchanger](https://github.com/viesturz/klipper-toolchanger).

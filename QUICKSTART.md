@@ -220,6 +220,12 @@ bash ~/klipper/scripts/biokalico-installer.sh install
      section 10). The SLA projector UI, firmware build panel, `$HOME`
      config root, and shared-password login all come built-in with
      Moonraker/Mainsail themselves - no separate copy-in step.
+  5. Asks, right at the start, whether this printer has an SLA projector.
+     Answer yes only if it does: that sets up the projector display server
+     (see [scripts/sla/README.md](scripts/sla/README.md)) and, on a Pi with
+     no desktop, a minimal graphical login that the projector needs. Answer
+     no (the default) and your Pi's desktop or command-line setup is left
+     exactly as it is.
 
 This takes a while (several minutes) the first time. It's building things
 and downloading packages. It's safe to re-run any time; it just updates
@@ -307,6 +313,14 @@ config reference](https://www.klipper3d.org/Config_Reference.html).
    (lines starting with `#`) call out other things worth checking, like
    thermistor types and bed size. Save with Ctrl+O, Enter, then exit with
    Ctrl+X.
+
+If your `printer.cfg` has an `[image_display]` section (the BioTrident
+template does) but you answered no to the SLA projector question in section
+6, set up the projector display server now:
+
+```bash
+bash ~/klipper/scripts/biokalico-installer.sh update image-display
+```
 
 Until this file exists, `klipper.service` will keep restarting every 10
 seconds reporting a missing config. That's expected, and doesn't stop

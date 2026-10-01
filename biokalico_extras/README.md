@@ -35,8 +35,8 @@ Use [printer/sla_video_macros.cfg](printer/sla_video_macros.cfg) to:
 - Embedded videos are loaded from comments via `LOAD_VIDEOS_FROM_GCODE`.
 - External references use `[sla_video_path]` and can be pre-loaded with `SLA_LOAD_LOCAL_VIDEO`.
 - Add your printer-specific movement, projector timing, and exposure control.
-- With systemd, install/start the display server first:
-  `sudo scripts/sla/install-image-display-service.sh`.
+- `biokalico-installer.sh` installs and starts the display server on printers
+  with an `[image_display]` section; see [scripts/sla/README.md](../scripts/sla/README.md).
 
 ## G-Code Command Reference
 
