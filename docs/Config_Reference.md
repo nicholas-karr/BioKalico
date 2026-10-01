@@ -6435,6 +6435,34 @@ trigger_to_bottom_z: 0.25
 #   samples_tolerance_retries). The default is 0.100mm.
 ```
 
+### [firmware_build]
+
+A micro-controller that Mainsail's Firmware panel can build and flash
+(one may define any number of sections with a "firmware_build" prefix).
+The build and flash are done by Moonraker's `firmware_build` component,
+which reads these sections from printer.cfg; Klipper only checks and
+reports them. See biokalico_extras/firmware_flash.md.
+
+```
+[firmware_build my_board]
+preset:
+#   The name of a build preset, a file in
+#   biokalico_extras/firmware_presets/ without its .config extension.
+#   This parameter must be provided.
+device:
+#   The serial device to flash through. Use a stable path such as
+#   /dev/serial/by-id/..., not /dev/ttyACM0, which can point at another
+#   board after a reconnect. It is never taken from the [mcu] section.
+#   This parameter must be provided.
+#mcu:
+#   The name of the [mcu] section running this firmware, used to compare
+#   its reported version with the current build. Use "mcu" for the main
+#   [mcu] section. The default is the name of this section.
+#overrides:
+#   Extra lines such as CONFIG_WANT_LDC1612=n, one per line, applied on
+#   top of the preset. The default is no overrides.
+```
+
 ### [image_display]
 
 SLA projector control through the BioKalico image display server

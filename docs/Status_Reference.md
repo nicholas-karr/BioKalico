@@ -212,6 +212,12 @@ objects:
 - `filament_detected`: Returns True if the sensor is in a triggered
   state.
 
+## firmware_build
+
+The following information is available in
+[firmware_build some_name](Config_Reference.md#firmware_build) objects:
+- `preset`, `device`, `mcu`, `overrides`: The configured values.
+
 ## firmware_retraction
 
 The following information is available in the

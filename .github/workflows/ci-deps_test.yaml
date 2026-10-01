@@ -1,0 +1,93 @@
+name: Vendored deps test
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mainsail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: deps/mainsail/package-lock.json
+
+      - name: npm ci
+        working-directory: deps/mainsail
+        run: npm ci
+
+      - name: Build
+        working-directory: deps/mainsail
+        run: npm run build
+
+      - name: Lint
+        working-directory: deps/mainsail
+        run: npm run lint
+
+      - name: Format check
+        working-directory: deps/mainsail
+        run: npm run format:check
+
+      - name: Unit tests
+        working-directory: deps/mainsail
+        run: npm run test:unit
+
+  moonraker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install lint tooling
+        # Same versions and flags as upstream Moonraker's test_code.yaml.
+        run: pip install flake8==6.1.0 mypy==1.5.1
+
+      - name: flake8
+        working-directory: deps/moonraker
+        run: flake8 --ignore=E226,E301,E302,E303,W503,W504 --max-line-length=88 --max-doc-length=88 moonraker scripts
+
+      - name: mypy
+        working-directory: deps/moonraker
+        run: mypy --ignore-missing-imports --follow-imports=silent moonraker scripts
+
+      - name: Install chelper build toolchain
+        # klippy/chelper compiles itself with gcc on first import.
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Set up Klippy venv
+        run: |
+          python3 -m venv /tmp/klippy-venv
+          /tmp/klippy-venv/bin/pip install -r scripts/klippy-requirements.txt
+
+      - name: Set up Moonraker test venv
+        working-directory: deps/moonraker
+        run: |
+          python3 -m venv .venv-test
+          .venv-test/bin/pip install -r scripts/moonraker-requirements.txt -r scripts/moonraker-dev-reqs.txt
+          # lmdb is needed by scripts/dbtool.py, which tests/conftest.py
+          # imports. pytest-asyncio 0.21 does not work with pytest 9.
+          .venv-test/bin/pip install "pytest>=7.0,<9" "pytest-asyncio>=0.21,<0.22" "pytest-timeout>=2.1.0" lmdb
+
+      - name: pytest
+        working-directory: deps/moonraker
+        run: |
+          .venv-test/bin/python -m pytest -q \
+            --klipper-path="$GITHUB_WORKSPACE" \
+            --klipper-exec=/tmp/klippy-venv/bin/python

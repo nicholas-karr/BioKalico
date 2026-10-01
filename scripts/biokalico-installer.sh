@@ -5,10 +5,12 @@
 # this one script, invoked directly or via Moonraker's [update_manager
 # klipper] install_script hook (a single "Update" button in Mainsail).
 #
-# Idempotent: every component's sync function is clone/download-if-missing +
-# refresh + hook + restart, so `install` and `update` share the same code.
-# Where an upstream project ships its own installer (moonraker, crowsnest),
-# this script delegates to it rather than re-implementing it.
+# Moonraker and Mainsail (BioKalico forks) and crowsnest (upstream) are git
+# submodules under deps/. Mainsail is built from source here, which needs
+# Node.js.
+#
+# Every sync function is safe to re-run, so `install` and `update` share the
+# same code. Moonraker and crowsnest are set up by their own installers.
 #
 # Usage:
 #   biokalico-installer.sh install              # first-time setup, all components
@@ -16,8 +18,11 @@
 #   biokalico-installer.sh status               # show each component's current ref
 #
 # Bootstrap on a brand-new host (stock Debian, Raspbian, or MainsailOS):
-#   git clone https://github.com/nicholas-karr/BioKalico.git ~/klipper
+#   git clone --recurse-submodules https://github.com/nicholas-karr/BioKalico.git ~/klipper
 #   bash ~/klipper/scripts/biokalico-installer.sh install
+#
+# (--recurse-submodules is optional; `install` and `update` fetch the
+# submodules themselves.)
 #
 # Called with no arguments (Moonraker's install_script convention), this
 # defaults to `update` with no component filter, i.e. sync everything.
@@ -29,17 +34,12 @@ KLIPPER_DIR="${KLIPPER_DIR:-$HOME/klipper}"
 KLIPPY_ENV="${KLIPPY_ENV:-$HOME/klippy-env}"
 PRINTER_DATA="${PRINTER_DATA:-$HOME/printer_data}"
 
-MOONRAKER_DIR="${MOONRAKER_DIR:-$HOME/moonraker}"
-MOONRAKER_ORIGIN="${MOONRAKER_ORIGIN:-https://github.com/Arksine/moonraker.git}"
-
-MAINSAIL_DIR="${MAINSAIL_DIR:-$HOME/mainsail}"
-MAINSAIL_ZIP_URL="${MAINSAIL_ZIP_URL:-https://github.com/mainsail-crew/mainsail/releases/latest/download/mainsail.zip}"
+MOONRAKER_DIR="${MOONRAKER_DIR:-$KLIPPER_DIR/deps/moonraker}"
+MAINSAIL_DIR="${MAINSAIL_DIR:-$KLIPPER_DIR/deps/mainsail}"
+CROWSNEST_DIR="${CROWSNEST_DIR:-$KLIPPER_DIR/deps/crowsnest}"
 
 MAINSAIL_CONFIG_DIR="${MAINSAIL_CONFIG_DIR:-$HOME/mainsail-config}"
 MAINSAIL_CONFIG_ORIGIN="${MAINSAIL_CONFIG_ORIGIN:-https://github.com/mainsail-crew/mainsail-config.git}"
-
-CROWSNEST_DIR="${CROWSNEST_DIR:-$HOME/crowsnest}"
-CROWSNEST_ORIGIN="${CROWSNEST_ORIGIN:-https://github.com/mainsail-crew/crowsnest.git}"
 
 ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest)
 
@@ -156,43 +156,26 @@ sync_klipper() {
     install_klipper_service
     seed_printer_data_config
 
-    # Also called from sync_moonraker() below: on a fresh install klipper
-    # syncs before moonraker exists, so this copy is a no-op here (silently
-    # skipped by patch-moonraker-component.sh, which is why it's `|| true`)
-    # and sync_moonraker's copy is what actually lands it. On an
-    # already-installed host (e.g. `update klipper` from
-    # deploy-mainsail-kalico.sh) this copy is the one that matters, so
-    # restart moonraker too - it only picks up new components at startup.
-    bash "$KLIPPER_DIR/scripts/patch-moonraker-component.sh" "$KLIPPER_DIR/biokalico_extras/moonraker/home_root.py" || true
-    bash "$KLIPPER_DIR/scripts/patch-moonraker-component.sh" "$KLIPPER_DIR/biokalico_extras/moonraker/firmware_build.py" || true
-
     restart_service klipper
-    restart_service moonraker
 }
 
 install_klipper_packages() {
     command -v apt-get >/dev/null 2>&1 || { warn "klipper: apt-get not found, skipping package install"; return; }
     log "klipper: installing system packages"
     sudo apt-get update -qq
-    # Same list as this repo's own scripts/install-debian.sh installer, plus
-    # ccache (multi-MCU firmware build cache), dfu-util (STM32 DFU flashing),
-    # and python3-serial (lib/canboot/flash_can.py needs pyserial for the
-    # SYSTEM python3 make/scripts/flash_usb.py invokes it with - klippy-env's
-    # own pyserial doesn't cover this, it's a separate interpreter). See
-    # biokalico_extras/firmware_flash.md. Also curl/ca-certificates/unzip -
-    # not needed by Klipper itself, but sync_mainsail() below needs curl to
-    # download the Mainsail release zip and unzip to extract it, and every
-    # HTTPS clone/download this script does needs ca-certificates. A
-    # genuinely bare Debian host has none of the three - installing them
-    # here up front means the rest of `install` can assume they exist
-    # instead of failing partway through a later component.
+    # Same list as scripts/install-debian.sh, plus ccache and dfu-util for
+    # firmware builds, python3-serial because flash_can.py runs under the
+    # system python3 rather than klippy-env (see
+    # biokalico_extras/firmware_flash.md), and curl/ca-certificates, which
+    # later steps need for HTTPS downloads. Node.js is installed by
+    # ensure_node() because the Debian package is too old.
     sudo apt-get install --yes \
         virtualenv python3-dev libffi-dev build-essential libncurses-dev libusb-dev \
         avrdude gcc-avr binutils-avr avr-libc \
         stm32flash libnewlib-arm-none-eabi gcc-arm-none-eabi binutils-arm-none-eabi \
         libusb-1.0 pkg-config \
         ccache dfu-util python3-serial \
-        curl ca-certificates unzip
+        curl ca-certificates
 }
 
 install_klipper_venv() {
@@ -284,84 +267,98 @@ seed_printer_data_config() {
     # expected, and does not block moonraker from coming up.
 }
 
+### submodules (deps/mainsail, deps/moonraker, deps/crowsnest) ###############
+
+sync_submodules() {
+    # git needs ca-certificates for https, and this can run before
+    # install_klipper_packages().
+    if command -v apt-get >/dev/null 2>&1 && [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then
+        log "submodules: installing ca-certificates (needed before any https git fetch)"
+        sudo apt-get update -qq
+        sudo apt-get install --yes ca-certificates
+    fi
+    log "submodules: syncing deps/{mainsail,moonraker,crowsnest}"
+    git -C "$KLIPPER_DIR" submodule sync --recursive
+    git -C "$KLIPPER_DIR" submodule update --init --recursive
+}
+
 ### moonraker #################################################################
 
 sync_moonraker() {
-    git_clone_or_pull "$MOONRAKER_DIR" "$MOONRAKER_ORIGIN"
     log "moonraker: running its own installer"
-    # -z: skip install-moonraker.sh's own systemctl enable/daemon-reload -
-    # we restart it ourselves below (once, after the component patches),
-    # rather than have it started/reloaded twice. But that means WE own
-    # both of those steps now: daemon-reload so systemd actually knows
-    # about the freshly-written unit file (without this, restart_service's
-    # own `systemctl list-unit-files | grep moonraker` guard can miss it
-    # entirely, silently skipping the restart below), and enable so
-    # moonraker survives a reboot instead of only running until the next one.
-    bash "$MOONRAKER_DIR/scripts/install-moonraker.sh" -s -z
+    # -z: skip the installer's own daemon-reload/enable; done below instead.
+    # -f: rewrite moonraker.service even if it exists, so a unit that points
+    # at an old ~/moonraker checkout is replaced with one for deps/moonraker.
+    bash "$MOONRAKER_DIR/scripts/install-moonraker.sh" -s -z -f
     sudo systemctl daemon-reload
     sudo systemctl enable moonraker
-
-    # Deploy here too (not just from sync_klipper) so a fresh `install` -
-    # where sync_klipper runs before ~/moonraker exists and its copy is a
-    # no-op - still ends up with these components in place: this is the
-    # first point in the install sequence where ~/moonraker/moonraker/components
-    # is guaranteed to exist.
-    bash "$KLIPPER_DIR/scripts/patch-moonraker-component.sh" "$KLIPPER_DIR/biokalico_extras/moonraker/home_root.py" || true
-    bash "$KLIPPER_DIR/scripts/patch-moonraker-component.sh" "$KLIPPER_DIR/biokalico_extras/moonraker/firmware_build.py" || true
-
     restart_service moonraker
 }
 
-### mainsail (release zip, not git) ##########################################
+### mainsail (built from source) #############################################
 
-sync_mainsail() {
-    log "mainsail: downloading latest release"
-    local tmpzip
-    tmpzip="$(mktemp --suffix=.zip)"
-    curl -fsSL "$MAINSAIL_ZIP_URL" -o "$tmpzip"
-
-    local cfg_backup=""
-    if [[ -f "$MAINSAIL_DIR/config.json" ]]; then
-        cfg_backup="$(mktemp)"
-        cp "$MAINSAIL_DIR/config.json" "$cfg_backup"
+ensure_node() {
+    # Mainsail's build needs Node 20.19+ or 22.12+. Debian's nodejs package
+    # is older (v18 on bookworm), so install from NodeSource when needed.
+    local required_major=20
+    local node_ok=0
+    if command -v node >/dev/null 2>&1; then
+        # Matches package.json's engines field (^20.19.0 || >=22.12.0).
+        if node -e '
+            const [major, minor] = process.versions.node.split(".").map(Number)
+            process.exit(
+                (major === 20 && minor >= 19) ||
+                (major === 22 && minor >= 12) ||
+                major > 22 ? 0 : 1
+            )
+        ' 2>/dev/null; then
+            node_ok=1
+        else
+            warn "mainsail: system node ($(node -v)) does not satisfy ^20.19.0 or >=22.12.0"
+        fi
+    fi
+    if [[ "$node_ok" -ne 1 ]]; then
+        command -v apt-get >/dev/null 2>&1 || { warn "mainsail: compatible node/npm missing and no apt-get, cannot build"; return 1; }
+        log "mainsail: installing Node.js ${required_major}.x from NodeSource"
+        curl -fsSL "https://deb.nodesource.com/setup_${required_major}.x" | sudo -E bash -
+        sudo apt-get install --yes nodejs
     fi
 
-    # Extract into a staging dir and verify it BEFORE touching the existing
-    # $MAINSAIL_DIR. `unzip` failing outright already aborts here under this
-    # script's `set -e` -- the staging dir keeps that abort from happening
-    # AFTER the old, working $MAINSAIL_DIR has been deleted. The index.html
-    # check below also catches an unzip that "succeeds" but extracts
-    # something unexpected (e.g. a truncated/corrupt zip unzip didn't error
-    # on).
-    local staging
-    staging="$(mktemp -d)"
-    unzip -qo "$tmpzip" -d "$staging"
-    rm -f "$tmpzip"
+    # Mainsail's "build" script also runs `zip` to make mainsail.zip.
+    if ! command -v zip >/dev/null 2>&1; then
+        command -v apt-get >/dev/null 2>&1 || {
+            warn "mainsail: zip missing and no apt-get, cannot build"
+            return 1
+        }
+        sudo apt-get install --yes zip
+    fi
+}
 
-    if [[ ! -f "$staging/index.html" ]]; then
-        rm -rf "$staging"
+sync_mainsail() {
+    ensure_node
+
+    # `npm run build` recreates dist/, so keep the instance's config.json.
+    local cfg_backup=""
+    if [[ -f "$MAINSAIL_DIR/dist/config.json" ]]; then
+        cfg_backup="$(mktemp)"
+        cp "$MAINSAIL_DIR/dist/config.json" "$cfg_backup"
+    fi
+
+    log "mainsail: building from source ($MAINSAIL_DIR)"
+    (cd "$MAINSAIL_DIR" && npm ci && npm run build)
+
+    if [[ ! -f "$MAINSAIL_DIR/dist/index.html" ]]; then
         [[ -n "$cfg_backup" ]] && rm -f "$cfg_backup"
-        warn "mainsail: extracted release is missing index.html, leaving existing $MAINSAIL_DIR untouched"
+        warn "mainsail: build did not produce dist/index.html, leaving nginx pointed at whatever was already there"
         return 1
     fi
 
-    rm -rf "$MAINSAIL_DIR"
-    mv "$staging" "$MAINSAIL_DIR"
-
     if [[ -n "$cfg_backup" ]]; then
-        cp "$cfg_backup" "$MAINSAIL_DIR/config.json"
+        cp "$cfg_backup" "$MAINSAIL_DIR/dist/config.json"
         rm -f "$cfg_backup"
     fi
 
     install_mainsail_nginx
-    # `|| true`: patch-mainsail-panel.sh has its own `set -euo pipefail`, and
-    # without this a single missing/unreadable panel source would abort the
-    # rest of this function (and, since biokalico-installer.sh itself runs under
-    # `set -e`, every component after mainsail in cmd_install) partway
-    # through - after $MAINSAIL_DIR was already wiped and re-unzipped above.
-    bash "$KLIPPER_DIR/scripts/patch-mainsail-panel.sh" "$KLIPPER_DIR/biokalico_extras/mainsail/projector-panel.js" || true
-    bash "$KLIPPER_DIR/scripts/patch-mainsail-panel.sh" "$KLIPPER_DIR/biokalico_extras/mainsail/firmware-panel.js" || true
-    bash "$KLIPPER_DIR/scripts/patch-mainsail-panel.sh" "$KLIPPER_DIR/biokalico_extras/mainsail/home-root-throttle.js" || true
 }
 
 install_mainsail_nginx() {
@@ -464,7 +461,7 @@ server {
     gzip_types text/plain text/css text/xml text/javascript application/javascript application/x-javascript application/json application/xml;
 
     # web_path from mainsail static files
-    root $MAINSAIL_DIR;
+    root $MAINSAIL_DIR/dist;
 
     index index.html;
     server_name _;
@@ -483,16 +480,10 @@ server {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
     }
 
-    # Injected panel scripts (biokalico_extras/mainsail/*.js, e.g.
-    # firmware-panel.js, projector-panel.js) live at a stable root-level
-    # URL with no cache-busting hash in the filename - unlike Mainsail's own
-    # /assets/*.js build output, which can be cached forever because a
-    # content change always gets a new hashed filename. Without this,
-    # updates get stuck behind any caching proxy in front of this host
-    # (e.g. Cloudflare) for as long as its default static-asset cache TTL,
-    # since nginx would otherwise send no explicit Cache-Control for these
-    # at all. Matches any root-level .js file, not just the two above, so
-    # future panel scripts don't need another edit here.
+    # Root-level .js files (mainly the service worker, sw.js) have no
+    # content hash in their names, unlike /assets/*.js. Without no-store, a
+    # caching proxy such as Cloudflare can keep serving an old copy after
+    # an update.
     location ~ ^/[^/]+\.js\$ {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
     }
@@ -603,7 +594,6 @@ sync_mainsail_config() {
 ### crowsnest ##################################################################
 
 sync_crowsnest() {
-    git_clone_or_pull "$CROWSNEST_DIR" "$CROWSNEST_ORIGIN" "v5"
     log "crowsnest: running its own installer (unattended)"
     # crowsnest's installer resolves its own resource files (e.g.
     # tools/libs/core.sh's `service_file="${PWD}/resources/crowsnest.service"`)
@@ -683,7 +673,11 @@ ensure_services_running() {
 }
 
 cmd_install() {
+    # Pull this repo first so sync_submodules checks out the new revisions.
+    sync_klipper
+    sync_submodules
     for c in "${ALL_COMPONENTS[@]}"; do
+        [[ "$c" == "klipper" ]] && continue
         sync_component "$c"
     done
     ensure_services_running
@@ -692,7 +686,18 @@ cmd_install() {
 cmd_update() {
     local components=("$@")
     [[ ${#components[@]} -eq 0 ]] && components=("${ALL_COMPONENTS[@]}")
+
+    local c
     for c in "${components[@]}"; do
+        if [[ "$c" == "klipper" ]]; then
+            sync_klipper
+            break
+        fi
+    done
+    # After sync_klipper, so the newly pulled submodule revisions are used.
+    sync_submodules
+    for c in "${components[@]}"; do
+        [[ "$c" == "klipper" ]] && continue
         sync_component "$c"
     done
     ensure_services_running
@@ -700,24 +705,21 @@ cmd_update() {
 
 cmd_status() {
     local c dir
-    for c in klipper moonraker mainsail-config crowsnest; do
+    for c in klipper moonraker mainsail mainsail-config crowsnest; do
         case "$c" in
             klipper) dir="$KLIPPER_DIR" ;;
             moonraker) dir="$MOONRAKER_DIR" ;;
+            mainsail) dir="$MAINSAIL_DIR" ;;
             mainsail-config) dir="$MAINSAIL_CONFIG_DIR" ;;
             crowsnest) dir="$CROWSNEST_DIR" ;;
         esac
-        if [[ -d "$dir/.git" ]]; then
+        # Submodules have a .git file rather than a directory.
+        if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             printf "%-16s %s\n" "$c" "$(git -C "$dir" log -1 --format='%h %cd %s' --date=short)"
         else
             printf "%-16s not installed\n" "$c"
         fi
     done
-    if [[ -f "$MAINSAIL_DIR/index.html" ]]; then
-        printf "%-16s installed (%s)\n" "mainsail" "$(date -r "$MAINSAIL_DIR/index.html" +%Y-%m-%d)"
-    else
-        printf "%-16s not installed\n" "mainsail"
-    fi
 }
 
 main() {
@@ -729,7 +731,7 @@ main() {
         update) cmd_update "$@" ;;
         status) cmd_status ;;
         -h|--help)
-            sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
             ;;
         *)
             echo "Unknown command: $cmd (expected install, update, or status)" >&2

@@ -1,0 +1,5 @@
+# Test case for firmware_build (every documented option is accepted)
+CONFIG firmware_build.cfg
+DICTIONARY atmega2560.dict
+
+G4 P1

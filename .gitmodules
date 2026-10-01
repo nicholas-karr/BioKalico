@@ -1,0 +1,10 @@
+[submodule "deps/mainsail"]
+	path = deps/mainsail
+	url = https://github.com/nicholas-karr/mainsail.git
+[submodule "deps/moonraker"]
+	path = deps/moonraker
+	url = https://github.com/nicholas-karr/moonraker.git
+[submodule "deps/crowsnest"]
+	path = deps/crowsnest
+	url = https://github.com/mainsail-crew/crowsnest.git
+	branch = v5

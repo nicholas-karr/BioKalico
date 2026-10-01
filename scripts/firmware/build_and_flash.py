@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Build (and optionally flash) one or more [firmware_build <name>] targets
 # declared in printer.cfg. Invoked by
-# biokalico_extras/moonraker/firmware_build.py via Moonraker's shell_command
-# component; also runnable by hand for testing.
+# deps/moonraker/moonraker/components/firmware_build.py via Moonraker's
+# shell_command component; also runnable by hand for testing.
 #
 # Builds run in parallel (isolated per-target OUT/KCONFIG_CONFIG dirs under
 # firmware_builds/<name>/, shared ccache). Flashing is always strictly
@@ -12,10 +12,8 @@
 #   {"target": "<name>", "phase": "queued|building|built|flashing|done|error",
 #    "line": "..."}
 #
-# Note: this script does not check for an active print job before flashing -
-# that's the caller's (Moonraker component's) responsibility, done before
-# this process is even spawned, since it already has cheap access to live
-# print state.
+# With --flash-approval-file (passed by Moonraker), waits for approval
+# immediately before each flash.
 #
 # Usage:
 #   build_and_flash.py --action build --all
@@ -32,12 +30,14 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+import moonraker_api  # noqa: E402
+
 BUILD_ROOT = os.path.join(REPO_ROOT, "firmware_builds")
 PRESET_DIR = os.path.join(REPO_ROOT, "biokalico_extras", "firmware_presets")
 DEFAULT_PRINTER_CFG = os.path.expanduser("~/printer_data/config/printer.cfg")
@@ -61,7 +61,8 @@ class Interrupted(Exception):
 class ConfigError(Exception):
     # Raised for printer.cfg problems (missing preset, unresolvable mcu,
     # unknown/missing target). A normal Exception, not SystemExit - this
-    # module is imported directly by biokalico_extras/moonraker/firmware_build.py,
+    # module is imported directly by
+    # deps/moonraker/moonraker/components/firmware_build.py,
     # and SystemExit is a BaseException that would escape Moonraker's
     # (and tornado's, and asyncio.run()'s) exception handling and crash the
     # whole server instead of producing a clean API error. main() below is
@@ -336,34 +337,89 @@ def build_target(name, preset, overrides=""):
 
 
 def source_fingerprint(preset, overrides=""):
-    # Scoped deliberately, not a whole-repo hash: most of this repo (docs,
-    # klippy's own host-side Python, other targets' presets, this very
-    # driver script) has no effect on what actually gets compiled into a
-    # given target's klipper.bin, and a repo-wide fingerprint would flag a
-    # false "rebuild needed" for every unrelated edit. Only `src/` (the
-    # shared C source tree every architecture compiles from), this target's
-    # own Kconfig preset, and any printer.cfg 'overrides:' lines for it
-    # (see resolve_targets/build_target) actually affect the output bytes.
-    #
-    # This is also why it's a plain filesystem content hash rather than a
-    # git-based one (like `git stash create`, used for mcu_version - see
-    # docs/Bootloader_Entry.md's comment thread for why that's a boolean,
-    # not a content hash, and insufficient here too): a git-based hash only
-    # sees *tracked* files, so a new untracked .c file under src/ wouldn't
-    # register as a change. Walking the actual files on disk catches that.
     h = hashlib.sha256()
-    for rel in ("src",):
-        base = os.path.join(REPO_ROOT, rel)
-        for root, dirs, files in os.walk(base):
-            dirs.sort()
-            for fname in sorted(files):
-                full = os.path.join(root, fname)
+    # Kconfig, make rules, generator scripts, and architecture libraries all
+    # affect the firmware just as much as src/.  Hash the tracked tree
+    # identities (fast even for the large vendor library directory), then
+    # overlay the content of every changed or untracked build input so dirty
+    # worktrees are represented too.
+    build_paths = (
+        "src",
+        "lib",
+        "Makefile",
+        "Kconfig",
+        "scripts/buildcommands.py",
+        "scripts/check-gcc.sh",
+        "scripts/kconfig",
+        "scripts/stepstats.py",
+    )
+    tree = subprocess.run(
+        ["git", "-C", REPO_ROOT, "ls-tree", "-r", "HEAD", "--", *build_paths],
+        capture_output=True,
+    )
+    if tree.returncode == 0:
+        h.update(tree.stdout)
+        changed = subprocess.run(
+            [
+                "git",
+                "-C",
+                REPO_ROOT,
+                "diff",
+                "--name-only",
+                "-z",
+                "HEAD",
+                "--",
+                *build_paths,
+            ],
+            capture_output=True,
+        )
+        untracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                REPO_ROOT,
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                *build_paths,
+            ],
+            capture_output=True,
+        )
+        names = set()
+        for output in (changed.stdout, untracked.stdout):
+            names.update(
+                value.decode("utf-8", errors="surrogateescape")
+                for value in output.split(b"\0")
+                if value
+            )
+        for relpath in sorted(names):
+            h.update(relpath.encode("utf-8", errors="surrogateescape"))
+            full = os.path.join(REPO_ROOT, relpath)
+            try:
+                with open(full, "rb") as f:
+                    h.update(f.read())
+            except OSError:
+                h.update(b"<deleted>")
+    else:
+        # Packaged snapshots may not contain Git metadata.  Correctness is
+        # more important than speed in that uncommon path.
+        for rel in build_paths:
+            base = os.path.join(REPO_ROOT, rel)
+            candidates = []
+            if os.path.isfile(base):
+                candidates = [base]
+            elif os.path.isdir(base):
+                for root, dirs, files in os.walk(base):
+                    dirs.sort()
+                    candidates.extend(
+                        os.path.join(root, name) for name in sorted(files)
+                    )
+            for full in candidates:
                 h.update(os.path.relpath(full, REPO_ROOT).encode())
-                try:
-                    with open(full, "rb") as f:
-                        h.update(f.read())
-                except OSError:
-                    pass
+                with open(full, "rb") as f:
+                    h.update(f.read())
     preset_path = os.path.join(PRESET_DIR, preset + ".config")
     try:
         with open(preset_path, "rb") as f:
@@ -371,17 +427,21 @@ def source_fingerprint(preset, overrides=""):
     except OSError:
         pass
     h.update(overrides.strip().encode())
+    for command in (
+        ["arm-none-eabi-gcc", "-dumpfullversion", "-dumpversion"],
+        ["arm-none-eabi-ld", "--version"],
+        ["make", "--version"],
+    ):
+        proc = subprocess.run(command, capture_output=True)
+        h.update(b"\0".join(arg.encode() for arg in command))
+        h.update(proc.stdout if proc.returncode == 0 else b"<unavailable>")
     return h.hexdigest()
 
 
 def write_last_flashed(name, preset, overrides, config_path):
     build_dir = os.path.dirname(config_path)
-    # git_commit is informational only (shown in the UI) - source_fingerprint
-    # (src/ + this target's preset + overrides, see source_fingerprint()
-    # above) is what actually drives the "needs rebuild & reflash"
-    # comparison now, since a commit hash doesn't change for uncommitted
-    # edits and a repo-wide content hash would false-positive on edits
-    # unrelated to this target.
+    # git_commit is only shown in the UI. source_fingerprint decides whether
+    # a reflash is needed, since the commit hash misses uncommitted edits.
     commit_proc = subprocess.run(
         ["git", "-C", REPO_ROOT, "rev-parse", "HEAD"],
         capture_output=True,
@@ -428,11 +488,10 @@ def _wait_for_klippy_ready(target, timeout=60):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-                if data.get("result", {}).get("klippy_state") == "ready":
-                    emit(target, "flashing", "klipper reconnected")
-                    return
+            data = json.loads(moonraker_api.call(url, timeout=3).decode())
+            if data.get("result", {}).get("klippy_state") == "ready":
+                emit(target, "flashing", "klipper reconnected")
+                return
         except Exception:
             pass
         time.sleep(1)
@@ -482,6 +541,35 @@ def flash_target(name, preset, overrides, device):
         _wait_for_klippy_ready(name)
 
 
+def wait_for_flash_approval(name, approval_file, timeout=10):
+    if not approval_file:
+        return
+    try:
+        os.remove(approval_file)
+    except OSError:
+        pass
+    emit(name, "flash_check", "waiting for live printer-state approval")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with open(approval_file) as f:
+                decision = f.read().strip()
+        except OSError:
+            decision = ""
+        if not decision:
+            # Absent, or created but not yet written by the other process.
+            time.sleep(0.05)
+            continue
+        try:
+            os.remove(approval_file)
+        except OSError:
+            pass
+        if decision == "ok":
+            return
+        raise RuntimeError(decision)
+    raise RuntimeError("timed out waiting for flash approval")
+
+
 ######################################################################
 # Orchestration
 ######################################################################
@@ -492,6 +580,7 @@ def main():
     ap.add_argument("--printer-cfg", default=DEFAULT_PRINTER_CFG)
     ap.add_argument("--targets", default="")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--flash-approval-file", default="")
     ap.add_argument(
         "--action", choices=["build", "build_and_flash"], required=True
     )
@@ -552,6 +641,7 @@ def main():
     if args.action == "build_and_flash":
         for n in names:
             try:
+                wait_for_flash_approval(n, args.flash_approval_file)
                 flash_target(
                     n,
                     all_targets[n]["preset"],

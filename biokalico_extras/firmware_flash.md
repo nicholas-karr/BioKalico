@@ -1,9 +1,10 @@
 # Firmware Build & Flash Panel
 
-A "Firmware" card in Mainsail's Settings page that builds and flashes this
+A "Firmware" card on Mainsail's Machine page that builds and flashes this
 printer's micro-controllers from the browser, using per-board build presets
-stored in `printer.cfg`. Flashing goes over the Katapult bootloader - no 
-button presses.
+stored in `printer.cfg`. Flashing goes over the Katapult bootloader, or the
+chip's built-in DFU mode on boards without one - no button presses once
+Klipper is on the board.
 
 ## Layout
 
@@ -15,11 +16,10 @@ button presses.
   the Moonraker component.
 - `scripts/firmware/minimize_config.py` - reduces a full `.config` to a
   minimal preset.
-- `biokalico_extras/moonraker/firmware_build.py` +
-  `moonraker_firmware_build.conf` - Moonraker component exposing REST
-  endpoints, deployed the same "untracked drop-in" way as `home_root.py`
+- `deps/moonraker/moonraker/components/firmware_build.py` (BioKalico's own
+  Moonraker fork) + `biokalico_extras/moonraker/moonraker_firmware_build.conf`
+  - the component exposing REST endpoints, and its `moonraker.conf` include
   (see `biokalico_extras/README.md`).
-- `biokalico_extras/mainsail/firmware-panel.js` - the injected Settings card.
 
 ## `printer.cfg` syntax
 
@@ -37,21 +37,13 @@ overrides:
     CONFIG_WANT_LDC1612=n
 ```
 
-- `preset` (required): name of a `.config` file under
-  `biokalico_extras/firmware_presets/`.
-- `device` (required): a **stable** device path (`/dev/serial/by-id/...`),
-  not a bare `/dev/ttyACM0`-style path.
-- `mcu` (optional, defaults to the section name suffix): the `[mcu ...]`
-  status object to read `mcu_version` from, for mismatch detection.
-- `overrides` (optional, multi-line): extra `CONFIG_X=y`/`CONFIG_X=n` lines
-  applied on top of `preset`, same multi-line syntax as a gcode macro's
-  `gcode:` block. Appended after the preset before `olddefconfig` runs;
-  Kconfig takes the last value seen for a symbol set more than once.
-  Included in the mismatch-detection fingerprint.
-
-  To skip a shared preset entirely, point `preset` at a preset file of your
-  own instead - presets are plain files with no registry, so this needs no
-  code changes.
+Every option is described under
+[firmware_build](../docs/Config_Reference.md#firmware_build) in the config
+reference. `overrides` lines are appended after the preset before
+`olddefconfig` runs, so for a symbol set more than once Kconfig takes the
+last value, and they count toward mismatch detection. To skip a shared
+preset entirely, point `preset` at a preset file of your own instead -
+presets are plain files with no registry, so this needs no code changes.
 
 `klippy/extras/firmware_build.py` exists only so Klipper's config parser
 accepts these sections; the actual tooling
@@ -126,7 +118,8 @@ want from `/tmp/full.config` into an `overrides:` block in `printer.cfg`
 |---|---|---|---|
 | `stm32h743_mainboard` | LDO Leviathan V1.3 (this printer's `[mcu]`) | Katapult, 128KiB offset | `printer.cfg`'s header comment says "V1.1"; that's stale, the chip is H743 (V1.3). |
 | `rp2040_nitehawk_sb` | LDO Nitehawk SB (`[mcu nhk]`) | Katapult, 16KiB offset | Wrong offset erases Katapult - confirmed against LDO's docs. |
-| `stm32f405_toolhead` | Example toolchanger toolhead
+| `stm32f405_toolhead` | Toolchanger toolhead board | Katapult, 32KiB offset | |
+| `stm32g0b1_ebb36` | BIGTREETECH EBB36 CAN V1.2, over USB-C | None, no offset | The panel flashes it through the chip's DFU mode. To flash it by hand, see "Flashing by hand in DFU mode" below. |
 
 Getting a bootloader offset wrong either overwrites the bootloader or
 prevents the app from booting. To verify a board's bootloader before
@@ -135,6 +128,48 @@ request bootloader entry
 (`python3 -c 'import sys; sys.path.insert(0, "scripts"); import flash_usb as u; u.enter_bootloader("<device>")'`),
 then check `lsusb` - `1d50:6177` is Katapult, `0483:df11` is raw STM32 DFU,
 `2e8a:0003` is raw RP2040 bootloader. Restart `klipper` after.
+
+### Flashing by hand in DFU mode
+
+The panel flashes a board by asking its running Klipper firmware to reboot
+into the bootloader. When the board cannot answer that request, flash it by
+hand through the STM32 chip's built-in DFU mode. This comes up when:
+
+- the board does not run Klipper yet (new, or running other firmware);
+- the firmware on it is broken or was built from the wrong preset, so the
+  board no longer shows up under `/dev/serial/by-id/`;
+- a panel flash was interrupted and the board does not come back.
+
+A new board is not always a DFU case. Connect it and run
+`ls /dev/serial/by-id/`: a board listed as `usb-Klipper_<chip>_...-if00`
+already runs Klipper and can be flashed from the panel. This printer's EBB36
+arrived that way.
+
+The steps below use the EBB36 and its preset. For another STM32 board, use
+its preset name and see the board's manual for how to enter DFU mode. On a
+board whose preset has a Katapult offset, this writes Klipper after the
+bootloader and leaves Katapult in place; it does not restore a missing
+Katapult.
+
+1. Build the preset:
+   ```bash
+   cd ~/klipper
+   cp biokalico_extras/firmware_presets/stm32g0b1_ebb36.config /tmp/ebb36.config
+   make KCONFIG_CONFIG=/tmp/ebb36.config olddefconfig
+   make KCONFIG_CONFIG=/tmp/ebb36.config OUT=/tmp/ebb36/
+   ```
+2. Set the board's power jumper to USB (VUSB), connect the USB-C cable,
+   then hold the BOOT button, press and release RESET, and release BOOT.
+   `lsusb` should now list `0483:df11`.
+3. Flash it:
+   ```bash
+   make KCONFIG_CONFIG=/tmp/ebb36.config OUT=/tmp/ebb36/ flash FLASH_DEVICE=0483:df11
+   ```
+4. The board restarts into Klipper; press RESET if it does not show up
+   within a few seconds. It is now listed as
+   `/dev/serial/by-id/usb-Klipper_stm32g0b1xx_...-if00`. Use that path for
+   `serial` in `[mcu]` and for `device` in its `[firmware_build]` section.
+   From here on the panel can flash it.
 
 ## Build folders, parallel builds, ccache
 
@@ -179,15 +214,9 @@ current checkout would build:
 
 ## Moonraker endpoints
 
-All under `/server/firmware/`:
-
-| Endpoint | Method | Body | Notes |
-|---|---|---|---|
-| `targets` | GET | - | Configured targets + preset/mcu/device + mismatch status |
-| `build` | POST | `{"targets": [...] \| "all"}` | Build only, targets run in parallel |
-| `build_and_flash` | POST | `{"targets": [...] \| "all"}` | Build (parallel) then flash (sequential) - the only action that writes firmware |
-| `status` | GET | - | Current job state + buffered per-target log tail |
-| `cancel` | POST | - | SIGTERM the running driver process |
-
-A single job lock spans an entire request (build-only or build-and-flash);
-a second concurrent request is rejected.
+The endpoints are described in the Moonraker fork's own API docs
+(`deps/moonraker/docs/external_api/server.md`, starting at "List Firmware
+Targets"), and the component's options under `[firmware_build]` in
+`deps/moonraker/docs/configuration.md`. A single job lock spans an entire
+request (build-only or build-and-flash); a second concurrent request is
+rejected.

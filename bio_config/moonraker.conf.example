@@ -1,13 +1,6 @@
 # Template moonraker.conf for a BioKalico host. Copy this to
 # ~/printer_data/config/moonraker.conf and adjust as needed - see
 # QUICKSTART.md for the full walkthrough.
-#
-# The three [include ...] lines near the bottom are what make this a
-# "BioKalico" moonraker.conf rather than a stock Moonraker one: they pull in
-# the SLA projector power buttons, the $HOME config-file root, and the
-# firmware build/flash panel backend, all of which live in this repo's
-# biokalico_extras/moonraker/ rather than in printer_data (see
-# biokalico_extras/README.md for what each one does).
 
 [server]
 host: 0.0.0.0
@@ -52,11 +45,36 @@ primary_branch: main
 managed_services: klipper
 install_script: scripts/biokalico-installer.sh
 
-# SLA Projector power buttons + status sensor, maintained in the klipper repo.
-[include ../../klipper/biokalico_extras/moonraker/moonraker_projector.conf]
-
 # Registers $HOME as a selectable root in Mainsail's Config Files page.
 [include ../../klipper/biokalico_extras/moonraker/moonraker_home_root.conf]
 
 # Firmware build/flash panel backend - see biokalico_extras/firmware_flash.md.
 [include ../../klipper/biokalico_extras/moonraker/moonraker_firmware_build.conf]
+
+# "Restart All" button backend - see biokalico_extras/README.md.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_printer_services.conf]
+
+# Deletes old heartbeats used by the multi-user warning - see
+# biokalico_extras/README.md.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_presence_prune.conf]
+
+# Automatic recovery from a Klipper MCU shutdown and, if configured, a
+# dropped projector serial link - see biokalico_extras/README.md.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_auto_recovery.conf]
+
+# Per-print timelapse, off by default - see biokalico_extras/README.md.
+[include ../../klipper/biokalico_extras/moonraker/moonraker_timelapse.conf]
+
+# One shared password for Mainsail, the only way to log in - see
+# biokalico_extras/README.md.
+[simple_password_auth]
+# Leave blank to generate a random password on first run. It is written
+# back into this line, so open this file again afterward to see it.
+password:
+# True (default): requests from trusted_clients above skip the password
+# unless they came through a Cloudflare Tunnel. False: every request needs
+# the password. Set False on a network shared with people who should not
+# control the printer.
+local_bypass: True
+# Optional reminder text shown on Mainsail's login screen.
+hint: ""

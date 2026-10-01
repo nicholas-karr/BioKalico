@@ -200,25 +200,26 @@ From your terminal (SSH'd into the Pi, or a local terminal on your
 laptop), run:
 
 ```bash
-git clone https://github.com/nicholas-karr/BioKalico.git ~/klipper
+git clone --recurse-submodules https://github.com/nicholas-karr/BioKalico.git ~/klipper
 bash ~/klipper/scripts/biokalico-installer.sh install
 ```
 
 - The first line downloads ("clones") this repository into `~/klipper`
   (`~` means "your home directory").
 - The second line runs the installer, which:
-  1. Installs the system packages Klipper needs to build firmware.
+  1. Installs the system packages needed to build Klipper+firmware, Moonraker, Mainsail, and Crowsnest.
   2. Sets up `~/klippy-env` (Klipper's own isolated Python environment) and
      the `klipper` background service.
   3. Seeds `~/printer_data/config/moonraker.conf` from this repo's template
      ([`bio_config/moonraker.conf.example`](bio_config/moonraker.conf.example)),
      if one doesn't already exist.
-  4. Downloads and sets up Moonraker, Mainsail, mainsail-config, and
-     Crowsnest, including the `nginx` web server config that actually
-     makes Mainsail reachable in a browser (see section 10).
-  5. Copies this repo's BioKalico-specific patches (SLA projector UI,
-     firmware build panel, `$HOME` config root) into Moonraker and
-     Mainsail automatically.
+  4. Sets up Moonraker (from `deps/moonraker`) and mainsail-config, builds
+     Mainsail from source (from `deps/mainsail`, via `npm run build`), and
+     sets up Crowsnest (from `deps/crowsnest`), including the `nginx` web
+     server config that actually makes Mainsail reachable in a browser (see
+     section 10). The SLA projector UI, firmware build panel, `$HOME`
+     config root, and shared-password login all come built-in with
+     Moonraker/Mainsail themselves - no separate copy-in step.
 
 This takes a while (several minutes) the first time. It's building things
 and downloading packages. It's safe to re-run any time; it just updates
@@ -379,10 +380,15 @@ router or exposing your home IP address. `cloudflared` (a small program
 running on the Pi) makes an outbound connection to Cloudflare, and
 Cloudflare relays traffic to it.
 
-> **Security note**: Mainsail/Moonraker have no login screen by default.
-> Anyone with the URL can control your printer. A Cloudflare **Quick
-> Tunnel** (below) gets you a random, hard-to-guess URL for occasional use,
-> which is fine for testing. For anything long-lived, set up [Cloudflare
+> **Security note**: Computers on your local network open Mainsail without a
+> password. Anyone connecting through the tunnel must enter a password
+> first. The password is created the first time Moonraker starts; to see
+> it, run `grep password: ~/printer_data/config/moonraker.conf` on the Pi.
+> To require the password on your local network too, set
+> `local_bypass: False` under `[simple_password_auth]` in that file. A
+> Cloudflare **Quick Tunnel** (below) gets you a random, hard-to-guess URL
+> for occasional use, which is fine for testing. For anything long-lived,
+> also set up [Cloudflare
 > Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
 > in front of it (free for personal use) so it asks for a login before
 > showing your printer to the internet.
@@ -440,16 +446,17 @@ sudo systemctl status cloudflared
 If you're using one of the `bio_config/` templates and the
 `moonraker.conf.example` template from section 9, the SLA projector
 controls, the firmware build panel, and the `$HOME` config-file root in
-Mainsail are already wired up. `biokalico-installer.sh install` deployed all the
-underlying files in section 6, and the `[include ...]` lines in
-`moonraker.conf` load them.
+Mainsail are already wired up. `biokalico-installer.sh install` already
+built/set up Moonraker and Mainsail (section 6) with these features built
+in, and the `[include ...]` lines in `moonraker.conf` load their
+per-printer config.
 
 To confirm: in Mainsail, check Settings → Firmware exists (section 11), and
 if you have a projector attached, look for the SLA projector power toggles
 on the dashboard. If either is missing, restart services (section 10) and
 check [biokalico_extras/README.md](biokalico_extras/README.md), which
-covers this deployment mechanism in full, useful if you're troubleshooting
-or wrote your own `moonraker.conf` from scratch instead of the template.
+covers this setup in full, useful if you're troubleshooting or wrote your
+own `moonraker.conf` from scratch instead of the template.
 
 For the actual SLA printing workflow (video pipeline, macros, slicer
 setup) once the hardware side above is working, see
@@ -505,7 +512,7 @@ answer.
 - [README.md](README.md): project overview and the full documentation
   index.
 - [biokalico_extras/README.md](biokalico_extras/README.md): deep dive on
-  how the Moonraker/Mainsail patches in section 14 actually work, for when
+  how the Moonraker/Mainsail features in section 14 actually work, for when
   you outgrow the template `moonraker.conf`.
 - [biokalico_extras/firmware_flash.md](biokalico_extras/firmware_flash.md):
   full detail on the firmware panel from section 11, including how to

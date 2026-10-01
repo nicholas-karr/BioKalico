@@ -1,12 +1,6 @@
-# Declares [firmware_build <name>] sections so per-MCU build/flash presets
-# can live in printer.cfg instead of a separate config file. Purely
-# declarative - the actual build/flash work is done host-side by
-# scripts/firmware/build_and_flash.py via the firmware_build Moonraker
-# component (biokalico_extras/moonraker/firmware_build.py), which parses
-# printer.cfg directly rather than depending on this object at runtime.
-#
-# This exists only so Klipper's config parser (which fatal-errors on any
-# section not claimed by a loaded module) accepts these sections.
+# Accepts [firmware_build <name>] sections in printer.cfg so Klipper's config
+# parser doesn't reject them. The Moonraker firmware_build component reads
+# printer.cfg itself and does the actual build and flash.
 
 
 class FirmwareBuild:
@@ -26,12 +20,14 @@ class FirmwareBuild:
         # a stable identifier instead of inheriting one implicitly.
         self.mcu_name = config.get("mcu", self.name)
         self.device = config.get("device")
+        self.overrides = config.get("overrides", "")
 
     def get_status(self, eventtime=None):
         return {
             "preset": self.preset,
             "mcu": self.mcu_name,
             "device": self.device,
+            "overrides": self.overrides,
         }
 
 

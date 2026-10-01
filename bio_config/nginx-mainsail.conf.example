@@ -84,16 +84,10 @@ server {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
     }
 
-    # Injected panel scripts (biokalico_extras/mainsail/*.js, e.g.
-    # firmware-panel.js, projector-panel.js) live at a stable root-level
-    # URL with no cache-busting hash in the filename - unlike Mainsail's own
-    # /assets/*.js build output, which can be cached forever because a
-    # content change always gets a new hashed filename. Without this,
-    # updates get stuck behind any caching proxy in front of this host
-    # (e.g. Cloudflare) for as long as its default static-asset cache TTL,
-    # since nginx would otherwise send no explicit Cache-Control for these
-    # at all. Matches any root-level .js file, not just the two above, so
-    # future panel scripts don't need another edit here.
+    # Root-level .js files (mainly the service worker, sw.js) have no
+    # content hash in their names, unlike /assets/*.js. Without no-store, a
+    # caching proxy such as Cloudflare can keep serving an old copy after
+    # an update.
     location ~ ^/[^/]+\.js$ {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
     }

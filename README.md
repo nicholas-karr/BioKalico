@@ -21,12 +21,20 @@ New to this? [QUICKSTART.md](QUICKSTART.md) walks through everything from
 a blank Raspberry Pi (or laptop) to a running, remotely-accessible printer.
 No prior Linux or SSH experience assumed.
 
+## Developing
+
+Editing source on the host? See [Applying Changes During
+Development](biokalico_extras/README.md#applying-changes-during-development)
+for which service to restart (or rebuild) for a given change - Mainsail
+source, a Klipper extra, a Moonraker component, or just a `.cfg` file.
+
 ## Documentation
 
 - [biokalico_extras/README.md](biokalico_extras/README.md): host setup with
-  `scripts/biokalico-installer.sh`, and how the Moonraker/Mainsail patches
-  (projector power buttons, `$HOME` config root, firmware build panel) get
-  deployed from the files in `biokalico_extras/`.
+  `scripts/biokalico-installer.sh`, and how the Moonraker/Mainsail features
+  (projector power buttons, `$HOME` config root, firmware build panel,
+  shared-password login) built into BioKalico's own forks are wired up via
+  the `.conf` fragments in `biokalico_extras/`.
 - [scripts/sla/README.md](scripts/sla/README.md): the TCP display server
   that drives the projector: setup, systemd service, and the G-code command
   reference (`SLA_SHOW_FRAME`, `SLA_LOAD_GCODE_VIDEOS`, etc.).
@@ -36,6 +44,22 @@ No prior Linux or SSH experience assumed.
 - [bio_config/](bio_config/): `printer.cfg` templates for BioTrident and
   Printess.
 - Firmware build & flash panel: see below.
+
+## Vendored submodules
+
+`deps/mainsail` and `deps/moonraker` are BioKalico's own forks
+([nicholas-karr/mainsail](https://github.com/nicholas-karr/mainsail),
+[nicholas-karr/moonraker](https://github.com/nicholas-karr/moonraker)) - see
+[biokalico_extras/README.md](biokalico_extras/README.md) for what each
+feature does. `deps/crowsnest` is unmodified upstream
+([mainsail-crew/crowsnest](https://github.com/mainsail-crew/crowsnest),
+branch `v5`).
+
+`scripts/biokalico-installer.sh` builds Mainsail from source on-host and runs
+Moonraker's/Crowsnest's own installers against their submodule checkouts -
+see that script for the exact flow. Pulling in upstream Mainsail/Moonraker
+fixes means rebasing those forks' branches, then bumping the submodule
+pointer commit here, same as any other submodule update.
 
 ## Printer service management
 

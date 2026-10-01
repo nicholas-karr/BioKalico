@@ -22,6 +22,9 @@ LOG_DIR="$PRINTER_DATA/logs"
 MOONRAKER_HOST="${MOONRAKER_HOST:-127.0.0.1}"
 MOONRAKER_PORT="${MOONRAKER_PORT:-7125}"
 MOONRAKER_URL="http://${MOONRAKER_HOST}:${MOONRAKER_PORT}"
+# Authenticates with the API key, which works whether or not local requests
+# need a login (see moonraker_api.py).
+moonraker_api() { python3 "$(dirname "${BASH_SOURCE[0]}")/moonraker_api.py" "$@"; }
 
 # Order matters: klipper before moonraker (moonraker talks to klipper over
 # its unix socket), everything else can follow in any order.
@@ -78,7 +81,7 @@ wait_for_klippy() {
     log "waiting for moonraker + klippy to come back up"
     local i
     for ((i = 0; i < 60; i++)); do
-        if curl -fs "${MOONRAKER_URL}/server/info" 2>/dev/null | grep -q '"klippy_connected":true'; then
+        if moonraker_api "${MOONRAKER_URL}/server/info" 2>/dev/null | grep -q '"klippy_connected":true'; then
             return 0
         fi
         sleep 1
@@ -88,7 +91,7 @@ wait_for_klippy() {
 
 firmware_restart() {
     log "firmware-restarting MCUs via ${MOONRAKER_URL}/printer/firmware_restart"
-    if ! curl -fs -X POST "${MOONRAKER_URL}/printer/firmware_restart" >/dev/null; then
+    if ! moonraker_api --post "${MOONRAKER_URL}/printer/firmware_restart" >/dev/null; then
         warn "firmware_restart request failed -- is moonraker reachable at ${MOONRAKER_URL}?"
     fi
 }
@@ -100,7 +103,7 @@ klippy_state() {
     # non-zero and trip `set -e` at the call site, killing the whole script.
     # Falling back to an empty string here just makes the caller's retry
     # loop treat it as "not ready yet", which is what we want.
-    curl -fs "${MOONRAKER_URL}/printer/info" 2>/dev/null \
+    moonraker_api "${MOONRAKER_URL}/printer/info" 2>/dev/null \
         | grep -oE '"state"[[:space:]]*:[[:space:]]*"[a-z]+"' \
         | head -1 \
         | sed -E 's/.*"([a-z]+)"$/\1/' || true
