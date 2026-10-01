@@ -4,8 +4,9 @@
 # [simple_password_auth] can require a login for every request, including
 # ones from this host, and a login needs a browser. Moonraker accepts its API
 # key in an X-Api-Key header even when logins are forced, so host-side tools
-# (printer-services.sh, build_and_flash.py) call Moonraker through this file,
-# which reads that key from Moonraker's own database.
+# (printer-services.sh, monitoring.sh, reset-ftdi-hub.sh, build_and_flash.py)
+# call Moonraker through this file, which reads that key from Moonraker's own
+# database.
 #
 # The key is only ever sent to a loopback address. Without a readable key the
 # request is sent as it is, which still works when local_bypass is on.

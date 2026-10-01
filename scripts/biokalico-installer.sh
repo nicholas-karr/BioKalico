@@ -623,6 +623,101 @@ sync_crowsnest() {
     restart_service crowsnest
 }
 
+### OOM hardening #############################################################
+
+# Keeps a memory shortage from killing cloudflared (remote access) or the
+# printer services: caps /tmp so it can't fill RAM, tells the OOM killer to
+# avoid the important services, and installs systemd-oomd.
+
+cap_tmp_size() {
+    local unit=/etc/systemd/system/tmp.mount
+    local total_kb cap_kb
+    total_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+    cap_kb=$(( total_kb / 4 ))                # 25% of RAM
+    (( cap_kb > 4194304 )) && cap_kb=4194304  # ...but never more than 4G
+    local cap="${cap_kb}K"
+
+    log "hardening: capping /tmp tmpfs at $cap (systemd's default is 50% of RAM, unbounded in practice)"
+    # A full unit rather than a drop-in, because Debian doesn't always ship
+    # a tmp.mount to extend.
+    sudo systemctl unmask tmp.mount
+    sudo /bin/sh -c "cat > $unit" <<EOF
+[Unit]
+Description=Temporary Directory /tmp
+Documentation=man:hier(7)
+Before=local-fs.target
+
+[Mount]
+What=tmpfs
+Where=/tmp
+Type=tmpfs
+Options=mode=1777,strictatime,nosuid,nodev,size=$cap,nr_inodes=1m
+
+[Install]
+WantedBy=local-fs.target
+EOF
+    # Remove a drop-in left by older BioKalico installs.
+    sudo rm -f /etc/systemd/system/tmp.mount.d/biokalico-oom-hardening.conf
+    sudo systemctl daemon-reload
+    sudo systemctl enable tmp.mount
+    if ! sudo systemctl is-enabled --quiet tmp.mount; then
+        warn "hardening: tmp.mount size cap was written but could not be enabled"
+        return 1
+    fi
+    warn "hardening: /tmp size cap takes effect on next reboot (not remounting a live /tmp)"
+}
+
+protect_service_from_oom() {
+    local svc="$1"
+    service_unit_exists "$svc" || return 0
+
+    local drop_in="/etc/systemd/system/${svc}.service.d/biokalico-oom-hardening.conf"
+    if [[ -f "$drop_in" ]] && grep -qF "OOMScoreAdjust=-900" "$drop_in"; then
+        return
+    fi
+    log "hardening: protecting $svc.service from the OOM killer"
+    sudo mkdir -p "$(dirname "$drop_in")"
+    sudo /bin/sh -c "cat > $drop_in" <<'EOF'
+[Service]
+OOMScoreAdjust=-900
+ManagedOOMPreference=avoid
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl restart "$svc"
+}
+
+install_systemd_oomd() {
+    if ! sudo systemctl list-unit-files systemd-oomd.service &>/dev/null; then
+        log "hardening: installing systemd-oomd"
+        sudo apt-get update -qq
+        sudo apt-get install -y systemd-oomd
+    fi
+
+    local drop_in=/etc/systemd/system/-.slice.d/biokalico-oom-hardening.conf
+    if [[ ! -f "$drop_in" ]]; then
+        log "hardening: enabling proactive OOM monitoring for the whole system"
+        sudo mkdir -p "$(dirname "$drop_in")"
+        sudo /bin/sh -c "cat > $drop_in" <<'EOF'
+[Slice]
+ManagedOOMSwap=kill
+ManagedOOMMemoryPressure=kill
+EOF
+        sudo systemctl daemon-reload
+    fi
+
+    sudo systemctl enable --now systemd-oomd
+}
+
+harden_oom_protections() {
+    cap_tmp_size
+    protect_service_from_oom cloudflared
+    protect_service_from_oom klipper
+    protect_service_from_oom moonraker
+    # The X server the SLA projector draws on.
+    protect_service_from_oom xorg
+    install_systemd_oomd
+}
+
 ### orchestration ##############################################################
 
 sync_component() {
@@ -676,6 +771,8 @@ cmd_install() {
     # Pull this repo first so sync_submodules checks out the new revisions.
     sync_klipper
     sync_submodules
+    # Before the sync loop, which exits on the first failing component.
+    harden_oom_protections
     for c in "${ALL_COMPONENTS[@]}"; do
         [[ "$c" == "klipper" ]] && continue
         sync_component "$c"
@@ -696,6 +793,8 @@ cmd_update() {
     done
     # After sync_klipper, so the newly pulled submodule revisions are used.
     sync_submodules
+    # Before the sync loop, which exits on the first failing component.
+    harden_oom_protections
     for c in "${components[@]}"; do
         [[ "$c" == "klipper" ]] && continue
         sync_component "$c"

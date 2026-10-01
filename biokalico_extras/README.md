@@ -261,8 +261,9 @@ these two use a path relative to the including file instead:
    Restarting Moonraker doesn't log anyone out, but changing `password` and
    restarting does. API key clients (crowsnest, other API clients) are not
    affected by the password. This includes this repo's own host-side scripts
-   (`printer-services.sh` and the firmware flasher), which read the key from
-   Moonraker's database with `scripts/moonraker_api.py`.
+   (`printer-services.sh`, `monitoring.sh`, `reset-ftdi-hub.sh` and the
+   firmware flasher), which read the key from Moonraker's database with
+   `scripts/moonraker_api.py`.
 
 9. **"Restart All" button.** A menu item in Mainsail's top-right power menu,
    above the "Klipper Control" section, that restarts every host-side

@@ -43,6 +43,8 @@ source, a Klipper extra, a Moonraker component, or just a `.cfg` file.
   [klipper-toolchanger](https://github.com/viesturz/klipper-toolchanger).
 - [bio_config/](bio_config/): `printer.cfg` templates for BioTrident and
   Printess.
+- [biokalico_extras/monitoring_troubleshooting.md](biokalico_extras/monitoring_troubleshooting.md):
+  what to do when `monitoring.sh` emails you a host alert.
 - Firmware build & flash panel: see below.
 
 ## Vendored submodules

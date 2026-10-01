@@ -507,6 +507,24 @@ that's failing, and a screenshot if the problem is visual (bad print,
 UI error) - the more specific context you give it, the more useful the
 answer.
 
+**The whole box goes unresponsive, or a remote tunnel silently drops for
+hours.** This is almost always the Linux kernel running out of memory and
+swap at the same time, not a crash - the machine can look "frozen" from the
+outside for a long time before the kernel's OOM killer finally frees enough
+to recover on its own, with no reboot involved. `biokalico-installer.sh
+install`/`update` now applies three protections automatically, every run:
+
+- `/tmp` is capped (25% of RAM, up to 4G) instead of the systemd default of
+  50% of RAM, so a runaway process filling it up hits an error instead of
+  taking down the whole system. Takes effect on the next reboot.
+- `cloudflared`, `klipper.service`, and `moonraker.service` are marked
+  low-priority-to-kill (`OOMScoreAdjust=-900`), so if memory does run out,
+  the kernel goes after anything else first.
+- `systemd-oomd` is installed and enabled, which watches memory/swap
+  pressure continuously and kills the actual offending process early,
+  instead of the kernel doing it as a last resort once everything is
+  already thrashing.
+
 ## 16. Where to go next
 
 - [README.md](README.md): project overview and the full documentation
