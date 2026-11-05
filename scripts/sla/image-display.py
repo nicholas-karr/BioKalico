@@ -1763,6 +1763,9 @@ class ImageDisplayServer:
     def _read_image_size(self, image_path: str) -> tuple[int, int]:
         try:
             with Image.open(image_path) as img:
+                # Decode fully: a truncated file must fail here, not later on
+                # the display thread after success was reported.
+                img.load()
                 return img.size
         except Exception as e:
             raise RuntimeError(f"Failed to read image size: {e}")
