@@ -78,6 +78,10 @@ class MotionBaseline:
         self.motions = collections.OrderedDict()
 
     def add(self, key, reading):
+        if reading <= 0:
+            # StallGuard 0 is the end of the scale, not a normal reading. A
+            # floor of 0 would never trip and would look like "not learned".
+            return
         readings = self.motions.get(key)
         if readings is None:
             readings = self.motions[key] = collections.deque(
@@ -532,6 +536,8 @@ class StallMonitor:
                 self.next_index = (index + 1) % count
                 self._read(stretch, index)
                 break
+        if not stretch.next_reads:
+            return float("inf")
         return min(stretch.next_reads.values())
 
     def _read(self, stretch, index):

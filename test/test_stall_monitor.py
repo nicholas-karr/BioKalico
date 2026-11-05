@@ -311,6 +311,19 @@ def test_motion_key_separates_speed_and_direction():
     assert key([50.0, 0.1]) == key([50.0, -0.2])
 
 
+def test_zero_readings_are_not_learned():
+    baseline = stall_monitor.MotionBaseline(3)
+    key = (1, 1)
+    for reading in (0, 400, 410, 420):
+        baseline.add(key, reading)
+    assert baseline.get_floor(key) == 400
+
+
+def test_a_stretch_without_scheduled_reads_does_not_raise(printer, monitor):
+    stretch = stall_monitor.Stretch(0.0, 1.0, (1, 1), [50.0, 50.0])
+    assert monitor._read_due(stretch, 0.5) == float("inf")
+
+
 def test_diag_pins_are_shared_with_homing(printer, monitor):
     assert printer.lookup_object("pins").shared == ["gpio4", "gpio16"]
 
