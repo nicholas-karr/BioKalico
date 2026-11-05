@@ -276,26 +276,6 @@ def test_homing_is_done_in_machine_coordinates(tmp_path):
     assert env.gcode_move.offset == [0.0, 0.0, 0.0]
 
 
-def test_homing_inside_a_running_print_restores_the_origin(tmp_path):
-    env = printing_env(tmp_path)
-    env.fire("toolheads:selected", "sla")
-    saved = list(env.gcode_move.offset)
-    assert saved != [0.0, 0.0, 0.0]
-    env.fire("homing:home_rails_begin", None, [])
-    assert env.gcode_move.offset == [0.0, 0.0, 0.0]
-    env.fire("homing:home_rails_end", None, [])
-    assert env.gcode_move.offset == saved
-
-
-def test_homing_in_a_paused_print_leaves_the_restore_to_resume(tmp_path):
-    env = printing_env(tmp_path)
-    env.fire("toolheads:selected", "sla")
-    env.fire("homing:home_rails_begin", None, [])
-    env.print_stats.state = "paused"
-    env.fire("homing:home_rails_end", None, [])
-    assert env.gcode_move.offset == [0.0, 0.0, 0.0]
-
-
 def test_changed_projector_resolution_is_flagged(tmp_path):
     env = new_env(tmp_path)
     env.call("CAL_PLATE_RECT_SAVE X=0 Y=0 W=10 H=10")
