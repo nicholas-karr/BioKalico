@@ -36,6 +36,7 @@ declare -A SUBMODULE_SNAPSHOT_DIRS
 DOCKER="docker"
 # Use sudo if this user can't reach the Docker daemon.
 docker info >/dev/null 2>&1 || DOCKER="sudo docker"
+export DOCKER
 
 log()  { echo "==> $*"; }
 fail() { echo "==> FAIL: $*" >&2; exit 1; }

@@ -357,15 +357,20 @@ def main():
             "the simulated printer is not ready; run scripts/docker-test/sim/setup.sh in the container first"
         )
 
-    for scenario in API_SCENARIOS:
-        scenario(api)
+    try:
+        for scenario in API_SCENARIOS:
+            scenario(api)
 
-    if args.ui:
-        import ui
+        if args.ui:
+            import ui
 
-        ui.run(api, args)
-
-    finish(api)
+            ui.run(api, args)
+    finally:
+        # Leave the sim as setup.sh does, even after a scenario failed.
+        try:
+            finish(api)
+        except Exception as exc:
+            print("WARNING: the cleanup after the run failed: %s" % exc)
     print()
     if failures:
         print("==> %d E2E CHECK(S) FAILED:" % len(failures))

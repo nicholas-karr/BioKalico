@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 
 CONTAINER = os.environ.get("CONTAINER_NAME", "biokalico-install-test")
+# run.sh exports DOCKER, which is "sudo docker" when the user cannot reach the daemon.
+DOCKER = os.environ.get("DOCKER", "docker").split()
 PLA = "FFF_BASIC_PLA_BIOSLICERTRIDENT"
 PCL = "FFF_PCL_BIOINK_BIOSLICERTRIDENT"
 SILICONE = "FFF_SILICONE_BIOSLICERTRIDENT"
@@ -123,20 +125,45 @@ class Blocked(threading.Thread):
         self.result = self.api.gcode(self.script, timeout=120)
 
 
+class SimError(Exception):
+    pass
+
+
 def in_container(*cmd):
-    return subprocess.run(
-        ["docker", "exec", "-u", "biokalico", CONTAINER, *cmd],
+    result = subprocess.run(
+        [*DOCKER, "exec", "-u", "biokalico", CONTAINER, *cmd],
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise SimError(
+            "in the container, %s failed: %s"
+            % (" ".join(cmd), result.stderr.strip() or result.stdout.strip())
+        )
+    return result
+
+
+def _must(step, result):
+    ok, message = result
+    if not ok:
+        raise SimError("reset failed at %s: %s" % (step, message))
 
 
 def reset(api):
     """A known layout: nhk on the carriage, syringe in dock 1, others aside."""
-    api.gcode("SIM_CLEAR_LOG")
+    _must("SIM_CLEAR_LOG", api.gcode("SIM_CLEAR_LOG"))
     for name in ("nhk", "syringe", "solenoid"):
-        api.call("set_state", toolhead=name, state="unmounted")
-    api.call("set_state", toolhead="syringe", state="docked", dock=1)
-    api.call("set_state", toolhead="nhk", state="mounted")
-    api.call("set_state", toolhead="solenoid", state="disconnected")
-    api.gcode("TOOLHEADS_SYNC")
+        _must(
+            "unmount " + name,
+            api.call("set_state", toolhead=name, state="unmounted"),
+        )
+    _must(
+        "dock syringe",
+        api.call("set_state", toolhead="syringe", state="docked", dock=1),
+    )
+    _must("mount nhk", api.call("set_state", toolhead="nhk", state="mounted"))
+    _must(
+        "disconnect solenoid",
+        api.call("set_state", toolhead="solenoid", state="disconnected"),
+    )
+    _must("TOOLHEADS_SYNC", api.gcode("TOOLHEADS_SYNC"))

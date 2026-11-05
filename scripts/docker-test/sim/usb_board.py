@@ -37,6 +37,11 @@ def plug():
             time.sleep(0.1)
         sys.exit("the pty did not appear")
     os.setsid()
+    # Do not hold the caller's pipes open, or a caller that captures output
+    # waits for this process to exit.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
     master, slave = pty.openpty()
     os.symlink(os.ttyname(slave), LINK)
     with open(PIDFILE, "w") as f:
