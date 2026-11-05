@@ -6518,6 +6518,170 @@ and [status reference](Status_Reference.md#image_display).
 #   The default is not to check the file.
 ```
 
+### [materials]
+
+Material inventory tracking. Material definitions come from
+[material](#material) sections and slot groups from
+[material_slots](#material_slots) sections. Slot contents, and materials
+created or edited in Mainsail, are saved to a state file and take
+priority over the config. This section must be present whenever any
+`[material]` or `[material_slots]` section exists. See also the
+[g-code commands](G-Codes.md#materials),
+[status reference](Status_Reference.md#materials) and
+[API endpoints](API_Server.md#materialsset_slot).
+
+```
+[materials]
+#state_file: ~/printer_data/config/materials_state.cfg
+#   The file slot contents and runtime material definitions are saved
+#   to. The default is ~/printer_data/config/materials_state.cfg.
+```
+
+### [material]
+
+A material definition (one may define any number of sections with a
+"material" prefix). The name after "material" is the material id.
+Mainsail can override a definition from the config, but it can only be
+removed by deleting its section here.
+
+```
+[material my_material]
+#display_name:
+#   The name shown in Mainsail. The default is the material id.
+#params_color:
+#   The color shown for slots holding this material, as six hex digits
+#   without the leading '#' (for example 9e9e9e). The '#' is added
+#   back when the file is read.
+#params_slicer_token:
+#   The name the slicer uses for this material. SELECT_MATERIAL and
+#   TOOLHEADS_PREFLIGHT accept it in place of the material id.
+#params_channel_type:
+#   Set to fff for filament. Amounts of a material with channel type
+#   fff are in grams, and of any other material in mL.
+#params_unit:
+#   The unit amounts of this material are in. The default is chosen
+#   from params_channel_type.
+#params_<name>:
+#   Any other option starting with "params_" is stored as a string and
+#   reported in the materials status object without the prefix.
+```
+
+### [material_slots]
+
+A group of material slots, such as the vats of an SLA turntable or the
+reservoir of a toolhead (one may define any number of sections with a
+"material_slots" prefix). The name after "material_slots" is the group
+id. A group can belong to at most one
+[toolhead_unit](#toolhead_unit) or [material_selector](#material_selector).
+The config only says how many slots a group has. What each slot holds
+is set in Mainsail and saved to the materials state file.
+
+```
+[material_slots my_group]
+count:
+#   The number of slots in the group. This parameter must be provided.
+#display_name:
+#   The name shown in Mainsail. The default is the group id.
+#active_slot:
+#   The slot in use until MATERIAL_CONSUME, MATERIAL_MARK_USED or a
+#   material_selector makes another one active. The default is no
+#   active slot.
+#uncovered_mode: off
+#   How long each slot has been uncovered (exposed to air and light) is
+#   tracked. Choices are "off" (not tracked), "auto" (only the active
+#   slot is uncovered, since it became active; for vats whose cover is
+#   removed only while in use) and "always" (every occupied slot is
+#   uncovered since its material was inserted; for machines without
+#   covers). The default is off.
+#params_<name>:
+#   Options starting with "params_" are stored as strings and shown on
+#   the group in Mainsail. params_color is checked as for [material].
+```
+
+### [toolheads]
+
+Toolhead registry for printers with more than one toolhead. Tracks where
+each [toolhead_unit](#toolhead_unit) is: disconnected, unmounted
+(connected, set aside), docked, or mounted on the carriage. At most one
+toolhead is mounted and each dock holds at most one toolhead. Each
+toolhead owns the materials in its slot group, and the
+[SELECT_MATERIAL](G-Codes.md#select_material) command gets a material into
+place by exchanging toolheads or by running a
+[material_selector](#material_selector). A [materials](#materials) section
+is required if any toolhead or selector sets material_group. See the
+[toolheads guide](Toolheads.md) for how to set this up, and also the
+[status reference](Status_Reference.md#toolheads) and
+[API endpoints](API_Server.md#toolheadsset_state).
+
+```
+[toolheads]
+#dock_count: 0
+#   The number of docks. The default is 0 (toolheads are only mounted
+#   or set aside by hand).
+#state_file: ~/printer_data/config/toolheads_state.cfg
+#   The file toolhead positions are saved to. The default is
+#   ~/printer_data/config/toolheads_state.cfg.
+```
+
+### [toolhead_unit]
+
+A physical toolhead (one may define any number of sections with a
+"toolhead_unit" prefix). Requires a [toolheads](#toolheads) section.
+
+```
+[toolhead_unit my_toolhead]
+#display_name:
+#   The name shown in Mainsail and in prompts. The default is the
+#   section name.
+#material_group:
+#   The [material_slots] group this toolhead carries. The materials in
+#   its slots are the ones the toolhead owns. The default is no group.
+#tool:
+#   The name of a [tool] section (see docs/Toolheads.md) whose
+#   pickup_gcode and dropoff_gcode move this toolhead. Those templates
+#   can read the dock involved as tool.dock (0 when unknown). A docked
+#   toolhead with a tool is exchanged automatically; any other toolhead
+#   is mounted by hand while the printer waits. The default is no tool.
+#mcu:
+#   The name of an [mcu] section with is_non_critical set to True.
+#   Unplugging that board marks the toolhead disconnected, and plugging
+#   it back in restores its previous state. The default is not to
+#   follow a board.
+#initial_state: unmounted
+#   Where the toolhead is before it has been placed: disconnected,
+#   unmounted, docked or mounted. Only used until the state file holds
+#   a record of the toolhead. The default is unmounted.
+#initial_dock:
+#   The dock (1 to dock_count) of a toolhead that starts docked, or the
+#   dock a mounted toolhead returns to. Required when initial_state is
+#   docked, and not allowed when it is disconnected or unmounted.
+#homeable: True
+#   Set to False for a toolhead that must never be homed. While it is
+#   mounted G28 does not move anything (see TOOLHEAD_SET_ORIGIN). The
+#   default is True.
+```
+
+### [material_selector]
+
+A slot group whose material is switched by running a macro instead of
+exchanging toolheads, such as an SLA vat turntable (one may define any
+number of sections with a "material_selector" prefix). Requires a
+[toolheads](#toolheads) section and a [materials](#materials) section.
+
+```
+[material_selector my_selector]
+material_group:
+#   The [material_slots] group this selector switches between. This
+#   parameter must be provided.
+select_gcode:
+#   A list of G-Code commands to execute to bring a slot into use. The
+#   template can read "group" (the group id), "slot" (the slot number,
+#   starting at 1), "index" (slot minus 1) and "material" (the material
+#   id). It is not run when the slot is already the active one. See
+#   docs/Command_Templates.md for G-Code format. This parameter must be
+#   provided.
+```
+
 ### [trad_rack]
 
 Trad Rack multimaterial system support. See the following documents from the

@@ -22,8 +22,8 @@ Use [printer/sla_video_macros.cfg](printer/sla_video_macros.cfg) to:
   - not here.
 - `mainsail/`: (empty of panel scripts as of this repo's submodule
   conversion) - the projector panel, firmware build/flash panel, "Restart
-  All" button, auto-reconnect, presence warning, and shared-password login
-  all live as real Vue/Vuex source in `deps/mainsail`
+  All" button, auto-reconnect, presence warning, shared-password login, and
+  the materials card all live as real Vue/Vuex source in `deps/mainsail`
   (BioKalico's own Mainsail fork), built by Mainsail's own `npm run build`,
   not injected into a downloaded release.
 - `printer/`: `.cfg` macro files glob-included by `printer.cfg`.
@@ -49,7 +49,19 @@ Use [printer/sla_video_macros.cfg](printer/sla_video_macros.cfg) to:
 - **`SLA_SHOW_FRAME NAME=<name> FRAME=<frame>`**: Display frame `FRAME` from loaded video `NAME`.
 - **`SLA_CLEAR`**: Display black on projector (clear image).
 - **`SLA_SET_H_OFFSET OFFSET=<offset>`**: Set horizontal image offset from center, in pixels.
-- **`BIOSLICER_MATERIAL_SWAP MATERIAL=<material>`**: Move toolhead(s) or reposition resin bowl to start printing with the given material.
+
+### SLA Material Swap
+
+- **`BIOSLICER_MATERIAL_SWAP CHANNEL=<index>`**: Bring the resin vat in slot `<index>` of the `sla` material group into place. Slots count from 0 here, so `CHANNEL=0` is slot 1.
+
+This is the SLA counterpart of a tool change (`T<n>`). The name is the one
+BioSlicer uses, but the macro is written per machine in its `printer.cfg`,
+because the motion depends on the hardware: the BioTrident's lifts the bed
+and rotates the vat table. It is not normally called directly. With the
+BioTrident profile, BioSlicer sends `SELECT_MATERIAL MATERIAL=<name>`,
+which finds the slot holding that material and runs this command through
+`[material_selector sla]` (see
+[bioslicer_macros.md](bioslicer_macros.md)).
 
 ### Projector Control
 
@@ -113,7 +125,9 @@ Moonraker resolve them by literal path-joining, with no `~` expansion), so
 these two use a path relative to the including file instead:
 
 1. **`printer.cfg` macro include.** `printer.cfg` must glob-include the
-   `printer/` directory so the `.cfg` files there load:
+   `printer/` directory so the `.cfg` files there load. Every printer loads these files, so they hold only macros
+   and material definitions; hardware and slot groups for one machine belong
+   in that machine's `printer.cfg`:
    ```
    [include ../../klipper/biokalico_extras/printer/*.cfg]
    ```
@@ -318,7 +332,60 @@ these two use a path relative to the including file instead:
     (path is relative to `moonraker.conf`'s directory, typically
     `~/printer_data/config/`).
 
-11. **Automatic recovery.** When Klipper shuts down on its own while the
+11. **Materials tracking card.** A "Materials" card on the Mainsail dashboard,
+    directly above the Temperature card, listing an expandable section per
+    slot group that no toolhead owns (the SLA vat; a toolhead's own groups
+    are on the Toolheads card, item 12). Each section holds a fixed number of
+    material slots; each slot references a named material definition and
+    tracks live instance data (amount remaining, container height, date
+    inserted, time left uncovered, comments). Unlike the other items here,
+    this is a Klipper extra rather than a Moonraker component:
+    [klippy/extras/materials.py](../klippy/extras/materials.py) owns the data
+    (it is closest to the printing process, so amount can auto-decrement as
+    material is used), and Moonraker automatically exposes the extra's
+    webhooks endpoints to the browser, so no Moonraker-side code is needed.
+    The dashboard card is `MaterialsPanel.vue` in the Mainsail fork.
+
+    Material definitions are seeded from
+    [printer/materials.cfg](printer/materials.cfg) (already picked up by the
+    glob-include in item 1). The slot groups depend on the machine, so they
+    are in its `printer.cfg`; see `bio_config/biotrident.cfg` and
+    `bio_config/printess.cfg`. Definitions can also be created and edited at
+    runtime from the card's "Manage Materials" dialog. The options are
+    described under [materials](../docs/Config_Reference.md#materials) in
+    the config reference, which links to the commands, status fields and web
+    endpoints. The BioTrident's SLA vat swap (`BIOSLICER_MATERIAL_SWAP` in
+    `bio_config/biotrident.cfg`) marks the swapped-to slot used, and the
+    syringe-dispense macro template in the same file consumes the dispensed
+    amount.
+
+12. **Toolheads card.** A "Toolheads" card on the Mainsail dashboard, directly
+    above the Materials card, showing every toolhead, where it is and the
+    materials it owns, with controls to record a change by hand, reorder the
+    docks and, for a head with motion macros, mount it automatically. When a
+    print needs a head that has to be mounted by hand, a dialog on every open
+    dashboard asks for it and waits. Toolhead slot groups (amount, dates,
+    comments) are shown and edited here instead of on the Materials card,
+    which keeps the SLA vats and the "Manage Materials" dialog.
+    [klippy/extras/toolheads.py](../klippy/extras/toolheads.py) owns the
+    state; the card is `ToolheadsPanel.vue` and the dialog
+    `TheToolheadMountDialog.vue` in the Mainsail fork.
+
+    Configuration lives in `bio_config/biotrident.cfg`, the template for your
+    `printer.cfg`, not in an included file.
+    [docs/Toolheads.md](../docs/Toolheads.md) is the setup guide: changing
+    toolheads by hand, docks and automatic changes, toolhead boards and
+    material selectors. The options are described under
+    [toolheads](../docs/Config_Reference.md#toolheads) in the config
+    reference, which links to the commands, status fields and web endpoints.
+
+    To have BioSlicer name the material on every tool change, its printer
+    profile sets `toolchange_gcode = SELECT_MATERIAL MATERIAL=[next_material]`
+    and `toolchange_omit_tool_command`; see
+    [Toolchange Placeholders](https://github.com/nicholas-karr/BioSlicer/blob/master/doc/Hybrid_FDM_SLA_Video_Materials.md#toolchange-placeholders)
+    in the BioSlicer docs.
+
+13. **Automatic recovery.** When Klipper shuts down on its own while the
     printer is idle, Moonraker runs the same restart sequence as the "Restart
     All" button (item 9), so an MCU communication fault no longer waits for
     someone to run `FIRMWARE_RESTART`. It tries at most
@@ -344,16 +411,6 @@ these two use a path relative to the including file instead:
     them in a `[auto_recovery]` section of your own `moonraker.conf` after
     the include. Every option, and how to find the paths, is described
     under `[auto_recovery]` in `deps/moonraker/docs/configuration.md`.
-
-Items 3-11 above are now real, tracked, committed source in BioKalico's own
-Mainsail/Moonraker forks (`deps/mainsail`, `deps/moonraker`, vendored as git
-submodules - see the top-level README for the submodule/build/CI setup). All
-are built and tested like any other first-party
-feature of those projects, rather than files copied or `sed`-injected into
-someone else's build output at deploy time. Pulling in upstream
-Mainsail/Moonraker fixes means rebasing those forks' branches, then bumping
-the submodule pointer commit here - same workflow as any other submodule
-update.
 
 ## Applying Changes During Development
 

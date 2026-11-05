@@ -401,6 +401,59 @@ and might later produce asynchronous messages such as:
 This data can be used to render:
 * The time/force graph
 
+### materials/set_slot
+
+This endpoint is available when a
+[materials config section](Config_Reference.md#materials) is enabled.
+It sets the contents of a material slot. Only the parameters given are
+changed: `material` (a material id, or an empty string or null to empty
+the slot), `amount`, `container_height`, `comments`, `color` (a color
+like `#a1b2c3`, or null to use the material's color) and
+`date_inserted` (a Unix timestamp). Assigning a different material
+clears the slot's color and sets `date_inserted` to now. Emptying the
+slot ignores the other parameters. For example:
+`{"id": 123, "method": "materials/set_slot", "params": {"group": "sla",
+"slot": 2, "material": "gelma_10", "amount": 40}}`
+returns the slot as reported in the
+[materials status](Status_Reference.md#materials) `slots` list.
+
+### materials/clear_slot
+
+This endpoint empties a material slot. For example:
+`{"id": 123, "method": "materials/clear_slot", "params": {"group": "sla",
+"slot": 2}}`
+returns the emptied slot.
+
+### materials/set_uncovered_duration
+
+This endpoint corrects how long the active slot of a group with
+`uncovered_mode: auto` has been uncovered. For example:
+`{"id": 123, "method": "materials/set_uncovered_duration", "params":
+{"group": "sla", "slot": 1, "seconds": 3600}}`
+returns the slot. It is an error for any other group or slot; for a
+group with `uncovered_mode: always`, set `date_inserted` with
+"materials/set_slot" instead.
+
+### materials/set_definition
+
+This endpoint creates a material definition, or overrides an existing
+one. `params` holds the definition's properties without the `params_`
+prefix. For example:
+`{"id": 123, "method": "materials/set_definition", "params": {"id":
+"gelma_5", "display_name": "GelMA 5%", "params": {"channel_type": "sla",
+"color": "#f0d878"}}}`
+returns `{"id": "gelma_5", "material": {...}}`, the material as reported
+in the [materials status](Status_Reference.md#materials).
+
+### materials/delete_definition
+
+This endpoint deletes a material definition created with
+"materials/set_definition". It is an error if a slot holds the material
+or if it has a `[material]` section in the config. For example:
+`{"id": 123, "method": "materials/delete_definition", "params": {"id":
+"gelma_5"}}`
+returns `{"deleted": "gelma_5"}`.
+
 ### pause_resume/cancel
 
 This endpoint is similar to running the "PRINT_CANCEL" G-Code command.
@@ -438,3 +491,42 @@ might return:
 
 As with the "gcode/script" endpoint, this endpoint only completes
 after any pending G-Code commands complete.
+
+### toolheads/set_state
+
+This endpoint is available when a
+[toolheads config section](Config_Reference.md#toolheads) is enabled.
+It is similar to running the "TOOLHEAD_SET_STATE" G-Code command. For
+example:
+`{"id": 123, "method": "toolheads/set_state", "params": {"toolhead":
+"syringe", "state": "docked", "dock": 2}}`
+returns `{"toolhead": "syringe"}`.
+
+### toolheads/reorder_docks
+
+This endpoint is similar to running the "TOOLHEAD_REORDER_DOCKS" G-Code
+command, with `order` a list holding a toolhead name or null for each
+dock. For example:
+`{"id": 123, "method": "toolheads/reorder_docks", "params": {"order":
+["syringe", null, "nhk"]}}`
+returns `{"order": ["syringe", null, "nhk"]}`.
+
+### toolheads/confirm_mount
+
+While a "SELECT_MATERIAL" or "SELECT_TOOLHEAD" command waits for a
+toolhead to be mounted by hand (see `awaiting_mount` in the
+[toolheads status](Status_Reference.md#toolheads)), this endpoint
+confirms that it has been, and the command continues. The optional
+`removed_state` (`unmounted`, `disconnected` or `docked`; the default is
+`unmounted`) and `removed_dock` say where the toolhead that had to come
+off went. For example:
+`{"id": 123, "method": "toolheads/confirm_mount", "params":
+{"removed_state": "docked", "removed_dock": 1}}`
+returns `{"confirmed": "syringe"}`.
+
+### toolheads/cancel_mount
+
+This endpoint cancels a wait for a toolhead to be mounted by hand, which
+makes the waiting command fail. For example:
+`{"id": 123, "method": "toolheads/cancel_mount"}`
+returns `{"cancelled": "syringe"}`.

@@ -420,6 +420,34 @@ understands it).
 - `z_position_lower`: Last probe attempt just lower than the current height.
 - `z_position_upper`: Last probe attempt just greater than the current height.
 
+## materials
+
+The following information is available in the
+[materials](Config_Reference.md#materials) object. Times are Unix
+timestamps in seconds.
+- `materials`: A dictionary of every material definition, keyed by
+  material id. Each entry holds `display_name`, `unit`, `source`
+  (`config` for a material with a `[material]` section, `user` for one
+  created in Mainsail) and every `params_<name>` option under `<name>`.
+- `slot_groups`: A dictionary of the slot groups, keyed by group id, in
+  config order. Each entry holds `display_name`, `count`, `params`,
+  `uncovered_mode`, `active_slot` (`None` when no slot is active) and
+  `slots`, a list with one entry per slot:
+  - `index`: The slot number, starting at 1.
+  - `material`: The material id, or `None` for an empty slot.
+  - `amount`: The remaining amount in the material's unit, or `None`
+    when not set.
+  - `container_height`: The height entered for the container. For
+    reference only; it is never used to compute `amount`.
+  - `comments`: Free text.
+  - `color`: A color like `#a1b2c3` for this slot only, or `None` to use
+    the material's `color`. Cleared when the slot's material changes.
+  - `date_inserted`, `last_used`: When the material was put in the slot
+    and when it was last used, or `None`.
+  - `uncovered_since`: When the slot was last uncovered, derived from
+    the group's `uncovered_mode`, or `None` when it is covered or not
+    tracked.
+
 ## mcu
 
 The following information is available in
@@ -676,6 +704,35 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot
   "INACTIVE" and "PRIMARY".
 - `carriage_1`: The mode of the carriage 1. Possible values are:
   "INACTIVE", "PRIMARY", "COPY", and "MIRROR".
+
+## toolheads
+
+The following information is available in the
+[toolheads](Config_Reference.md#toolheads) object:
+- `dock_count`: The number of docks.
+- `docks`: A list with one entry per dock: the name of the toolhead in
+  that dock, or `None` when it is empty.
+- `order`: The toolhead names in config order.
+- `mounted`: The name of the mounted toolhead, or `None`.
+- `origin_set`: False while the mounted toolhead cannot be homed and
+  its origin has not been set with `TOOLHEAD_SET_ORIGIN`, otherwise True.
+- `toolheads`: A dictionary keyed by toolhead name. Each entry holds
+  `display_name`, `state` (`disconnected`, `unmounted`, `docked` or
+  `mounted`), `dock` (the dock it is in or returns to, or `None`),
+  `can_swap` (True when it has a `tool` and can be exchanged
+  automatically), `homeable` (False for a toolhead that is never homed),
+  `material_group`, `materials` (the material ids in its
+  slots), `mcu` and `follows_mcu`.
+- `selectors`: A dictionary keyed by selector name. Each entry holds
+  `material_group`.
+- `awaiting_mount`: While a command waits for a toolhead to be mounted by
+  hand, a dictionary with `toolhead` (the one wanted), `material` (the
+  material asked for, or `None`), `reason` (the wanted toolhead's state
+  when the wait began), `remove` (the toolhead to take off first, or
+  `None`) and `since` (a Unix timestamp). `None` otherwise.
+- `busy`: True while an automatic exchange or a `select_gcode` runs.
+- `last_error`: The error from the last failed automatic exchange, or an
+  empty string.
 
 ## tools_calibrate
 

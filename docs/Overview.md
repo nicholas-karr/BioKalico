@@ -58,6 +58,8 @@ communication with the Kalico developers.
   tools such as lasers or spindles.
 - [Exclude Object](Exclude_Object.md): The guide to the Exclude Objects
   implementation.
+- [Toolheads](Toolheads.md): Set up a printer with several toolheads
+  or switchable materials.
 
 ## Developer Documentation
 

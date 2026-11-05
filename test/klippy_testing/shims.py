@@ -27,6 +27,11 @@ class PrinterShim:
         def request_restart(self, reason):
             raise Restart(reason)
 
+        def create_gcode_command(self, command, commandline, params):
+            return klippy.gcode.GCodeCommand(
+                self, command, commandline, params, False
+            )
+
         def call(self, cmdline):
             command, *paramlist = cmdline.split()
             func = self.ready_gcode_handlers[command.upper()]
@@ -64,7 +69,9 @@ class PrinterShim:
         self, name: typing.Literal["configfile"]
     ) -> klippy.configfile.PrinterConfig: ...
 
-    def lookup_object(self, name):
+    def lookup_object(self, name, *default):
+        if default:
+            return self.objects.get(name, default[0])
         return self.objects[name]
 
     def lookup_objects(self, pfx=""):
@@ -83,3 +90,54 @@ class PrinterShim:
         return config
 
     def set_rollover_info(self, *_): ...
+
+
+_MISSING = object()
+
+
+class FakeWebhooks:
+    def __init__(self):
+        self.endpoints = {}
+
+    def register_endpoint(self, path, cb):
+        self.endpoints[path] = cb
+
+
+class FakeWebRequestError(Exception):
+    """Stands in for klippy.webhooks.WebRequestError."""
+
+
+class FakeWebRequest:
+    """Mimics the subset of klippy.webhooks.WebRequest that extras use,
+    including its strict argument types (a str argument must be a str, an
+    int argument an int and not a bool, a float argument an int or float)."""
+
+    error = FakeWebRequestError
+
+    def __init__(self, params):
+        self.params = params
+        self.sent = None
+
+    def get(self, item, default=_MISSING, types=None):
+        value = self.params.get(item, default)
+        if value is _MISSING:
+            raise FakeWebRequestError("Missing Argument [%s]" % (item,))
+        if (
+            types is not None
+            and type(value) not in types
+            and item in self.params
+        ):
+            raise FakeWebRequestError("Invalid Argument Type [%s]" % (item,))
+        return value
+
+    def get_str(self, item, default=_MISSING):
+        return self.get(item, default, types=(str,))
+
+    def get_int(self, item, default=_MISSING):
+        return self.get(item, default, types=(int,))
+
+    def get_float(self, item, default=_MISSING):
+        return float(self.get(item, default, types=(int, float)))
+
+    def send(self, data):
+        self.sent = data

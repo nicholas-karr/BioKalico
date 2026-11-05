@@ -1206,6 +1206,26 @@ scheduled to run after the stepper move completes, however if a manual
 stepper move uses SYNC=0 then future G-Code movement commands may run
 in parallel with the stepper movement.
 
+### [materials]
+
+The following commands are available when the
+[materials config section](Config_Reference.md#materials) is enabled.
+Both commands make the given slot the active slot of its group.
+
+#### MATERIAL_CONSUME
+`MATERIAL_CONSUME GROUP=<group_id> SLOT=<n> AMOUNT=<amount>`: Subtract
+`AMOUNT` from the slot's remaining amount (not below 0) and record the
+slot as used now. `AMOUNT` is in the unit of the slot's material (grams
+for filament, mL otherwise; see
+[material](Config_Reference.md#material)). Fails if the slot is empty or
+its amount has not been set.
+
+#### MATERIAL_MARK_USED
+`MATERIAL_MARK_USED GROUP=<group_id> SLOT=<n> [AMOUNT=<amount>]`: Record
+the slot as used now without requiring a measured amount, for example
+after an SLA vat swap. If `AMOUNT` is given it is subtracted as in
+`MATERIAL_CONSUME`. Fails if the slot is empty.
+
 ### [mcp4018]
 
 The following command is available when a
@@ -1912,6 +1932,72 @@ or
 The velocity argument is not available on CoreXY. With no arguments, this
 command responds with the movement direction with the most acceleration or
 velocity.
+
+### [toolheads]
+
+The following commands are available when the
+[toolheads config section](Config_Reference.md#toolheads) is enabled.
+
+#### SELECT_MATERIAL
+`SELECT_MATERIAL MATERIAL=<material_id or slicer_token>`: Get a material
+into place, choosing the holder that is easiest to reach. Nothing moves
+if the material is already in place. A material in a
+[material_selector](Config_Reference.md#material_selector) group is
+switched by running that selector's `select_gcode`. A material held by a
+docked toolhead that has a `tool` is exchanged automatically, provided
+the mounted toolhead (if any) also has one: the `dropoff_gcode` of the
+mounted toolhead runs, then the `pickup_gcode` of the wanted one.
+Otherwise the toolhead must be mounted by hand: the command
+waits without moving the printer until the change is confirmed or
+cancelled in Mainsail (see the
+[toolheads/confirm_mount](API_Server.md#toolheadsconfirm_mount)
+endpoint), and cancelling fails the command. An unknown material, or one
+that nothing holds, is an error. With an empty `MATERIAL` the command
+does nothing.
+
+#### SELECT_TOOLHEAD
+`SELECT_TOOLHEAD TOOLHEAD=<name>`: Get the named toolhead onto the
+carriage, as `SELECT_MATERIAL` does for the toolhead holding a material.
+
+#### TOOLHEADS_PREFLIGHT
+`TOOLHEADS_PREFLIGHT MATERIALS=<material>[,<material>...]`: Report how
+each listed material (id or slicer token) would be brought into place,
+without moving anything. Fails with a list of every material that is
+unknown or not held by any toolhead or selector. Run it at the start of
+a print so the print stops before anything moves.
+
+#### TOOLHEAD_SET_STATE
+`TOOLHEAD_SET_STATE TOOLHEAD=<name> STATE=<state> [DOCK=<n>]`: Record
+where a toolhead physically is. `STATE` is one of `disconnected`,
+`unmounted`, `docked` or `mounted`. A docked toolhead without `DOCK`
+keeps its dock or takes the first free one. Mounting a toolhead marks the
+previously mounted one `unmounted`. A toolhead that follows an `mcu` is
+disconnected only by unplugging that board, and cannot be placed while
+the board is unplugged.
+
+#### TOOLHEAD_SET_ORIGIN
+`TOOLHEAD_SET_ORIGIN [X=<mm>] [Y=<mm>] [Z=<mm>]`: Make the current
+position of the mounted toolhead the origin (each axis defaults to 0).
+Only for a toolhead with `homeable: False`, whose axes sit mid-travel
+until this is run, so they can be jogged either way. The origin is a
+g-code offset, so the travel does not move. Until it is set `G28` fails
+and `TOOLHEADS_PREFLIGHT` refuses. Once it is set, `G28` does nothing and
+says so. Mounting or removing such a toolhead, and turning the motors
+off, forget the origin. Refused while a print is running.
+
+#### TOOLHEAD_REORDER_DOCKS
+`TOOLHEAD_REORDER_DOCKS ORDER=<name>[,<name>...]`: Reassign the docked
+toolheads to docks. `ORDER` has one entry per dock, in dock order, with
+`-` for an empty dock. It must list exactly the toolheads that
+currently hold a dock.
+
+`TOOLHEAD_SET_STATE` and `TOOLHEAD_REORDER_DOCKS` are refused while a
+print is running or a toolhead change is in progress.
+
+#### TOOLHEADS_SYNC
+`TOOLHEADS_SYNC`: Tell the toolchanger which toolhead is mounted. Edits
+made in Mainsail run this automatically. Does nothing while a toolhead
+change is in progress.
 
 ### ⚠️ [tools_calibrate]
 

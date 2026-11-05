@@ -1,0 +1,50 @@
+# Toolheads: registry state and automatic swaps through the real toolchanger
+# engine. What a slot holds can only be set through the web API, so selecting
+# by material is covered by test_toolheads.py instead.
+DICTIONARY atmega2560.dict
+CONFIG toolheads.cfg
+
+# The state files persist between runs, so start from a known layout
+TOOLHEAD_SET_STATE TOOLHEAD=pla STATE=unmounted
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=unmounted
+TOOLHEAD_SET_STATE TOOLHEAD=syringe STATE=unmounted
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=docked DOCK=1
+TOOLHEAD_SET_STATE TOOLHEAD=pla STATE=mounted
+SET_GCODE_VARIABLE MACRO=_LOG VARIABLE=events VALUE="''"
+
+ASSERT TEST='{printer.toolheads.mounted == "pla"}'
+ASSERT TEST='{printer.toolheads.docks == ["gel", none]}'
+ASSERT TEST='{printer.toolheads.toolheads.syringe.can_swap == false}'
+
+G28
+
+# Already in place: nothing moves
+SELECT_TOOLHEAD TOOLHEAD=pla
+ASSERT TEST='{printer["gcode_macro _LOG"].events == ""}'
+
+# Swap to the docked head: drop off before pickup, each told its dock
+SELECT_TOOLHEAD TOOLHEAD=gel
+ASSERT TEST='{printer["gcode_macro _LOG"].events == "dropoff tool pla_tool dock=2;pickup tool gel_tool dock=1;"}'
+ASSERT TEST='{printer.toolheads.mounted == "gel"}'
+ASSERT TEST='{printer.toolheads.toolheads.pla.state == "docked"}'
+ASSERT TEST='{printer.toolheads.toolheads.pla.dock == 2}'
+ASSERT TEST='{printer.toolchanger.tool == "tool gel_tool"}'
+
+# And back
+SET_GCODE_VARIABLE MACRO=_LOG VARIABLE=events VALUE="''"
+SELECT_TOOLHEAD TOOLHEAD=pla
+ASSERT TEST='{printer["gcode_macro _LOG"].events == "dropoff tool gel_tool dock=1;pickup tool pla_tool dock=2;"}'
+ASSERT TEST='{printer.toolheads.mounted == "pla"}'
+
+# Heads that hold a dock (a mounted head keeps its home dock) can be reordered
+ASSERT TEST='{printer.toolheads.docks == ["gel", "pla"]}'
+TOOLHEAD_REORDER_DOCKS ORDER=pla,gel
+ASSERT TEST='{printer.toolheads.docks == ["pla", "gel"]}'
+
+# A head mounted by hand is what the engine is told is on the carriage
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=mounted
+ASSERT TEST='{printer.toolchanger.tool == "tool gel_tool"}'
+ASSERT TEST='{printer.toolheads.toolheads.pla.state == "unmounted"}'
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=unmounted
+ASSERT TEST='{printer.toolchanger.tool == none}'
+ASSERT TEST='{printer.toolheads.mounted == none}'
