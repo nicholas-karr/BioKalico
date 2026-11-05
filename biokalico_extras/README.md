@@ -147,7 +147,8 @@ these two use a path relative to the including file instead:
    as a dashboard card. The card only appears on a printer with an
    `[image_display]` section, and has Turn On/Off, Black Screen and Standby
    buttons that are grayed out while the display server isn't answering or
-   the projector's serial link is down. See
+   the projector's serial link is down. A Calibrate button on it opens the
+   [plate calibration](../docs/G-Codes.md#plate_calibration) wizard. See
    [firmware_flash.md](firmware_flash.md) for the related firmware panel. Because this is now first-party source built by
    Mainsail's own Vite pipeline, none of the old release-zip-patching
    machinery applies: no raw `<script>` injection into a downloaded
@@ -275,9 +276,9 @@ these two use a path relative to the including file instead:
    Restarting Moonraker doesn't log anyone out, but changing `password` and
    restarting does. API key clients (crowsnest, other API clients) are not
    affected by the password. This includes this repo's own host-side scripts
-   (`printer-services.sh`, `monitoring.sh`, `reset-ftdi-hub.sh` and the
-   firmware flasher), which read the key from Moonraker's database with
-   `scripts/moonraker_api.py`.
+   (`printer-services.sh`, `monitoring.sh`, `reset-ftdi-hub.sh`, the firmware
+   flasher and the deploy script), which read the key from Moonraker's
+   database with `scripts/moonraker_api.py`.
 
 9. **"Restart All" button.** A menu item in Mainsail's top-right power menu,
    above the "Klipper Control" section, that restarts every host-side

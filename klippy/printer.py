@@ -454,12 +454,19 @@ class Printer:
                 self.run_result = "error_exit"
         # Check restart flags
         run_result = self.run_result
-        try:
-            if run_result == "firmware_restart":
-                self.send_event("klippy:firmware_restart")
-            self.send_event("klippy:disconnect")
-        except:
-            logging.exception("Unhandled exception during post run")
+        # Run each handler independently: a failing firmware_restart handler
+        # (eg, arduino reset on an unplugged MCU) must not skip the disconnect
+        # handlers, or webhooks leaks its sockets and Moonraker stays attached
+        # to a connection nothing reads.
+        events = ["klippy:disconnect"]
+        if run_result == "firmware_restart":
+            events.insert(0, "klippy:firmware_restart")
+        for event in events:
+            for cb in self.event_handlers.get(event, []):
+                try:
+                    cb()
+                except:
+                    logging.exception("Unhandled exception during post run")
         return run_result
 
     def set_rollover_info(self, name, info, log=True):

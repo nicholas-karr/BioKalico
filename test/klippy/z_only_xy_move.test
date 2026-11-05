@@ -1,0 +1,7 @@
+# X and Y moves are rejected by z_only kinematics
+CONFIG z_only.cfg
+DICTIONARY atmega2560.dict
+SHOULD_FAIL
+
+G28
+G1 X1

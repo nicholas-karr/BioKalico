@@ -601,7 +601,9 @@ class PrinterConfig:
         for (section, option), value in config.access_tracking.items():
             self.status_settings.setdefault(section, {})[option] = value
         for (section, option, value), msg in self.deprecated.items():
-            _type = "deprecated_value"
+            _type = (
+                "deprecated_value" if value is not None else "deprecated_option"
+            )
             self.warn(_type, msg, section, option, value)
 
         for section, option in self.unused_options:

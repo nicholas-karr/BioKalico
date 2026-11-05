@@ -1,0 +1,26 @@
+# Plate calibration: saving positions as tool offsets and the plate rectangle.
+# The projector commands need the image-display server, so they are covered by
+# test_plate_calibration.py instead.
+DICTIONARY atmega2560.dict
+CONFIG plate_calibration.cfg
+
+# The state file persists between runs
+CAL_PLATE_RECT_CLEAR
+CAL_TOOL_CLEAR TOOL=nozzle
+ASSERT TEST='{printer.plate_calibration.calibrated == false}'
+
+G28
+G90
+G1 X12 Y7 Z2 F6000
+CAL_TOOL_SAVE TOOL=nozzle
+ASSERT TEST='{printer.plate_calibration.offsets.nozzle.x == 12}'
+ASSERT TEST='{printer.plate_calibration.offsets.nozzle.z == 2}'
+
+CAL_PROJECTOR_FOCUS_SAVE
+ASSERT TEST='{printer.plate_calibration.offsets.sla.z == 2}'
+
+CAL_PLATE_RECT_SAVE X=10 Y=20 W=300 H=200
+ASSERT TEST='{printer.plate_calibration.rect == [10, 20, 300, 200]}'
+CAL_PLATE_RECT_CLEAR
+CAL_TOOL_CLEAR TOOL=nozzle
+CAL_TOOL_CLEAR TOOL=sla

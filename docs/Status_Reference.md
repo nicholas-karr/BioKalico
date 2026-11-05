@@ -371,7 +371,7 @@ the image display server, which is asked every 5 seconds.
 - `projector_declined`: The last power command the projector refused,
   for example turning off while already off, or `None`.
 - `pause_reason`: Why `PROJECTOR_ON` paused the print, or `None`.
-- `standby_armed`, `standby_in_seconds`: Whether `PROJECTOR_STANDBY`
+- `standby_armed`, `standby_in_seconds`: Whether the idle countdown
   will turn the projector off, and in how many seconds.
 - `status_stale`: True when the server has not answered for 15 seconds,
   so the values from it may be out of date.
@@ -513,6 +513,29 @@ The following information is available in the
 - `is_paused`: Returns true if a PAUSE command has been executed
   without a corresponding RESUME.
 
+## plate_calibration
+
+The following information is available in the
+[plate_calibration](Config_Reference.md#plate_calibration) object:
+- `calibrated`: True when a build plate rectangle is saved and the
+  projector still has the resolution it was saved at.
+- `rect`: The saved build plate rectangle as `[x, y, width, height]` in
+  projector pixels, or `None`.
+- `screen`: The projector resolution `[width, height]` the rectangle was
+  saved at, or `None`.
+- `screen_mismatch`: True when the projector resolution has changed
+  since the rectangle was saved, so it needs to be set again.
+- `calibrated_at`: When the rectangle was saved, or `None`.
+- `preview`: `focus` or `rect` while a calibration pattern is shown,
+  otherwise `None`.
+- `sla_tool`: The name the projector focus height is saved under.
+- `origin_tool`: The name whose saved position the running print is
+  using as its origin, or `None`.
+- `offsets`: A dictionary keyed by tool name. Each entry holds the saved
+  `x`, `y` and `z` machine position of the front left corner of the
+  build plate for that tool. The `sla_tool` entry only has `z`, the
+  projector focus height.
+
 ## print_stats
 
 The following information is available in the `print_stats` object
@@ -542,6 +565,15 @@ is defined):
   command. Note, if this is used in a macro, due to the order of
   template expansion, the PROBE (or similar) command must be run prior
   to the macro containing this reference.
+
+## pulse_pin
+
+The following information is available in
+[pulse_pin some_name](Config_Reference.md#pulse_pin) objects:
+- `pulse_width_us`, `triggers_per_sec`, `trigger_count`: The settings of
+  the last `START_PULSE_PIN` command, or the configured defaults if none
+  has run. `STOP_PULSE_PIN` sets `trigger_count` to 0.
+- `max_triggers_per_sec`: The highest pulse rate the pin accepts.
 
 ## pwm_cycle_time
 
@@ -600,6 +632,22 @@ The following information is available in
 The following information is available in the `skew_correction` object (this
 object is available if any skew_correction is defined):
 - `current_profile_name`: Returns the name of the currently loaded SKEW_PROFILE.
+
+## stall_monitor
+
+The following information is available in
+[stall_monitor some_name](Config_Reference.md#stall_monitor) objects:
+- `enabled`: True when stall detection is on.
+- `action`: What a detected stall does, `shutdown` or `report`.
+- `trip_ratio`: The fraction of the lowest normal reading below which a
+  reading counts as low.
+- `checked_time`: For how long (in seconds) motion was checked.
+- `stalls`: The number of stalls detected.
+- `last_stall`: A description of the last detected stall, or an empty
+  string.
+- `lowest_ratio["<stepper>"]`: The lowest reading the host took of the
+  stepper, as a fraction of the lowest normal reading for its motion,
+  or `None` if there is none yet.
 
 ## stepper_enable
 

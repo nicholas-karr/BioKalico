@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+import calibration_patterns
 import numpy as np
 import pyglet
 import yaml
@@ -245,6 +246,19 @@ def _parse_allowed_aspect_ratios(raw_value) -> set[tuple[int, int]]:
                 parsed.add(_normalize_ratio(int(parts[0]), int(parts[1])))
 
     return parsed or set(DEFAULT_ALLOWED_ASPECT_RATIOS)
+
+
+def _parse_plate_rect(value) -> Optional[tuple[int, int, int, int]]:
+    """Validate the optional plate_rect field: [x, y, w, h] in pixels."""
+    if value is None:
+        return None
+    try:
+        x, y, w, h = (int(round(float(v))) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError("plate_rect must be [x, y, width, height]")
+    if w <= 0 or h <= 0:
+        raise ValueError("plate_rect width and height must be positive")
+    return x, y, w, h
 
 
 def _format_aspect_ratios(ratios: set[tuple[int, int]]) -> str:
@@ -1038,7 +1052,12 @@ class ImageDisplayWindow(pyglet.window.Window):
             self.current_sprite.draw()
 
     def _set_texture(
-        self, texture, width: int, height: int, h_offset: float = 0.0
+        self,
+        texture,
+        width: int,
+        height: int,
+        h_offset: float = 0.0,
+        plate_rect=None,
     ):
         fb_w, fb_h = self.get_framebuffer_size()
         # Sprites hold references into pyglet's internal render batch that
@@ -1048,12 +1067,24 @@ class ImageDisplayWindow(pyglet.window.Window):
         if self.current_sprite is not None:
             self.current_sprite.delete()
         self.current_sprite = pyglet.sprite.Sprite(texture, x=0, y=0)
+        if plate_rect is not None:
+            # Stretch the whole image onto the calibrated build plate
+            # rectangle (x, y, w, h in projector pixels, origin top left).
+            rx, ry, rw, rh = plate_rect
+            self.current_sprite.update(
+                x=rx, y=fb_h - ry - rh, scale_x=rw / width, scale_y=rh / height
+            )
+            return
         self.current_sprite.scale = 1
         self.current_sprite.x = int((fb_w - width) / 2 + round(h_offset))
         self.current_sprite.y = (fb_h - height) // 2
 
     def load_image(
-        self, image_path: str, rotation: int = 0, h_offset: float = 0.0
+        self,
+        image_path: str,
+        rotation: int = 0,
+        h_offset: float = 0.0,
+        plate_rect=None,
     ):
         """Load an image from a local file path.
 
@@ -1062,6 +1093,8 @@ class ImageDisplayWindow(pyglet.window.Window):
                 resolved to a local path by the caller)
             rotation: Rotation angle in degrees (0, 90, 180, 270)
             h_offset: Horizontal pixel offset from centre (positive = right)
+            plate_rect: Calibrated (x, y, w, h) the image is stretched onto;
+                replaces h_offset when set
         """
         try:
             # Load image using PIL
@@ -1088,7 +1121,7 @@ class ImageDisplayWindow(pyglet.window.Window):
 
             texture = pyglet_image.get_texture()
 
-            self._set_texture(texture, width, height, h_offset)
+            self._set_texture(texture, width, height, h_offset, plate_rect)
 
             logger.info(
                 f"Image loaded successfully: {width}x{height}, rotation={rotation}°, h_offset={h_offset}"
@@ -1099,7 +1132,12 @@ class ImageDisplayWindow(pyglet.window.Window):
             raise
 
     def load_rgba_frame(
-        self, width: int, height: int, frame_rgba: bytes, h_offset: float = 0.0
+        self,
+        width: int,
+        height: int,
+        frame_rgba: bytes,
+        h_offset: float = 0.0,
+        plate_rect=None,
     ):
         """Load a raw RGBA frame and render it fullscreen."""
         try:
@@ -1112,7 +1150,7 @@ class ImageDisplayWindow(pyglet.window.Window):
             )
 
             texture = pyglet_image.get_texture()
-            self._set_texture(texture, width, height, h_offset)
+            self._set_texture(texture, width, height, h_offset, plate_rect)
         except Exception as e:
             logger.error(f"Failed to load RGBA frame: {e}")
             raise
@@ -1349,6 +1387,8 @@ class ImageDisplayServer:
             return await self.handle_unload_all_videos()
         elif cmd_type == "LIST_VIDEOS":
             return await self.handle_list_videos()
+        elif cmd_type == "CALIBRATION_PATTERN":
+            return await self.handle_calibration_pattern(command)
         elif cmd_type == "CLEAR":
             return await self.handle_clear()
         elif cmd_type == "PROJECTOR_OFF":
@@ -1397,6 +1437,7 @@ class ImageDisplayServer:
             image_path = command.get("path")
             rotation = int(command.get("rotation", 0))
             h_offset = float(command.get("h_offset", 0.0))
+            plate_rect = _parse_plate_rect(command.get("plate_rect"))
 
             if not image_path:
                 return {"status": "error", "message": "Missing path parameter"}
@@ -1458,10 +1499,15 @@ class ImageDisplayServer:
             # Schedule image loading on the main pyglet thread, then clean up
             # any downloaded temp file regardless of whether the load succeeded.
             def _load_and_cleanup(
-                dt, p=local_path, r=rotation, o=h_offset, temp=is_temp
+                dt,
+                p=local_path,
+                r=rotation,
+                o=h_offset,
+                rect=plate_rect,
+                temp=is_temp,
             ):
                 try:
-                    self.window.load_image(p, r, o)
+                    self.window.load_image(p, r, o, rect)
                 finally:
                     if temp:
                         self._cleanup_temp_file(p)
@@ -1524,6 +1570,7 @@ class ImageDisplayServer:
             name = command.get("name")
             frame = command.get("frame")
             h_offset = float(command.get("h_offset", 0.0))
+            plate_rect = _parse_plate_rect(command.get("plate_rect"))
             if not name:
                 return {"status": "error", "message": "Missing name parameter"}
             if frame is None:
@@ -1560,12 +1607,18 @@ class ImageDisplayServer:
             # scheduling and execution, so a stale/closed reference here
             # must be a safe no-op rather than an error.
             def _show_frame(
-                dt, w=width, h=height, r=rgba, o=h_offset, expected=window
+                dt,
+                w=width,
+                h=height,
+                r=rgba,
+                o=h_offset,
+                rect=plate_rect,
+                expected=window,
             ):
                 current = self.window
                 if current is None or current is not expected:
                     return
-                current.load_rgba_frame(w, h, r, o)
+                current.load_rgba_frame(w, h, r, o, rect)
 
             pyglet.clock.schedule_once(_show_frame, 0)
             self._has_content = True
@@ -1713,6 +1766,56 @@ class ImageDisplayServer:
                 return img.size
         except Exception as e:
             raise RuntimeError(f"Failed to read image size: {e}")
+
+    async def handle_calibration_pattern(self, command: dict) -> dict:
+        try:
+            pattern = str(command.get("pattern", "")).lower()
+            if pattern not in ("focus", "rect"):
+                return {
+                    "status": "error",
+                    "message": "pattern must be 'focus' or 'rect'",
+                }
+            rect = None
+            if pattern == "rect":
+                rect = _parse_plate_rect(command.get("rect"))
+                if rect is None:
+                    return {
+                        "status": "error",
+                        "message": "Missing rect parameter",
+                    }
+
+            projector_err = self._ensure_projector_on()
+            if projector_err:
+                return projector_err
+
+            window = self._binding_snapshot()["window"]
+            if window is None:
+                return {"status": "error", "message": "No display window bound"}
+            fb_w, fb_h = window.get_framebuffer_size()
+            if pattern == "focus":
+                frame = calibration_patterns.focus_pattern(fb_w, fb_h)
+            else:
+                frame = calibration_patterns.rect_pattern(fb_w, fb_h, rect)
+            rgba = frame.tobytes()
+
+            def _show(dt, expected=window):
+                current = self.window
+                if current is None or current is not expected:
+                    return
+                current.load_rgba_frame(fb_w, fb_h, rgba)
+
+            pyglet.clock.schedule_once(_show, 0)
+            self._has_content = True
+            self._last_content_change = time.monotonic()
+            return {
+                "status": "success",
+                "message": f"Displaying {pattern} pattern",
+                "width": fb_w,
+                "height": fb_h,
+            }
+        except Exception as e:
+            logger.error(f"Error showing calibration pattern: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def handle_clear(self) -> dict:
         try:

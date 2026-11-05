@@ -1,0 +1,24 @@
+# Plate calibration: a saved position is the g-code origin of a print that
+# uses its toolhead. The checks are in the printed file. The end of the print
+# is covered by test_plate_calibration.py, since nothing runs after it here.
+DICTIONARY atmega2560.dict
+CONFIG plate_calibration_print.cfg
+
+# The state files persist between runs, so start from a known layout
+TOOLHEAD_SET_STATE TOOLHEAD=pla STATE=unmounted
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=unmounted
+TOOLHEAD_SET_STATE TOOLHEAD=gel STATE=docked DOCK=1
+TOOLHEAD_SET_STATE TOOLHEAD=pla STATE=mounted
+CAL_TOOL_CLEAR TOOL=gel
+
+G28
+G90
+G1 X12 Y7 Z2 F6000
+CAL_TOOL_SAVE TOOL=pla
+
+# Outside a print, selecting changes nothing
+SELECT_TOOLHEAD TOOLHEAD=pla
+ASSERT TEST='{printer.plate_calibration.origin_tool == none}'
+ASSERT TEST='{printer.gcode_move.homing_origin.z == 0}'
+
+SDCARD_PRINT_FILE FILENAME=origin.gcode

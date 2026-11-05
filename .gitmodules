@@ -6,5 +6,5 @@
 	url = https://github.com/nicholas-karr/moonraker.git
 [submodule "deps/crowsnest"]
 	path = deps/crowsnest
-	url = https://github.com/mainsail-crew/crowsnest.git
+	url = https://github.com/nicholas-karr/crowsnest.git
 	branch = v5

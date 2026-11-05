@@ -103,14 +103,26 @@ class MCU_TMC_uart_bitbang:
                 self.mcu, self.cmd_queue, select_pins_desc
             )
         self.instances = {}
+        self.baud = None
         self.tmcuart_send_cmd = None
         self.mcu.register_config_callback(self.build_config)
+
+    def set_baud(self, baud):
+        if baud is None:
+            return
+        if self.baud is not None and self.baud != baud:
+            raise self.mcu.get_printer().config_error(
+                "Shared TMC uarts need the same uart_baud"
+            )
+        self.baud = baud
 
     def build_config(self):
         baud = TMC_BAUD_RATE
         mcu_type = self.mcu.get_constants().get("MCU", "")
         if mcu_type.startswith("atmega") or mcu_type.startswith("at90usb"):
             baud = TMC_BAUD_RATE_AVR
+        if self.baud is not None:
+            baud = self.baud
         bit_ticks = self.mcu.seconds_to_clock(1.0 / baud)
         self.mcu.add_config_cmd(
             "config_tmcuart oid=%d rx_pin=%s pull_up=%d tx_pin=%s bit_time=%d"
@@ -253,6 +265,9 @@ def lookup_tmc_uart_bitbang(config, max_addr):
             rx_pin_params, tx_pin_params, select_pins_desc
         )
         rx_pin_params["class"] = mcu_uart
+    mcu_uart.set_baud(
+        config.getint("uart_baud", None, minval=1000, maxval=500000)
+    )
     instance_id = mcu_uart.register_instance(
         rx_pin_params, tx_pin_params, select_pins_desc, addr
     )

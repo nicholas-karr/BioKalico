@@ -5,7 +5,7 @@
 # this one script, invoked directly or via Moonraker's [update_manager
 # klipper] install_script hook (a single "Update" button in Mainsail).
 #
-# Moonraker and Mainsail (BioKalico forks) and crowsnest (upstream) are git
+# Moonraker, Mainsail and crowsnest (BioKalico forks) are git
 # submodules under deps/. Mainsail is built from source here, which needs
 # Node.js.
 #
@@ -49,6 +49,7 @@ ALL_COMPONENTS=(klipper moonraker mainsail mainsail-config crowsnest ambient-rec
 
 log() { echo "==> $*"; }
 warn() { echo "==> WARNING: $*" >&2; }
+die() { echo "==> ERROR: $*" >&2; exit 1; }
 
 require_not_root() {
     if [[ "$EUID" -eq 0 ]]; then
@@ -137,7 +138,13 @@ git_clone_or_pull() {
 
 sync_klipper() {
     log "klipper: syncing $KLIPPER_DIR"
-    if [[ -d "$KLIPPER_DIR/.git" ]]; then
+    if [[ "${BIOKALICO_SKIP_SUBMODULE_SYNC:-0}" == "1" ]]; then
+        if ! git -C "$KLIPPER_DIR" rev-parse --is-inside-work-tree \
+            >/dev/null 2>&1; then
+            die "klipper: snapshot mode requires an existing Git worktree"
+        fi
+        log "klipper: preserving files supplied by snapshot deployment"
+    elif [[ -d "$KLIPPER_DIR/.git" ]]; then
         local origin
         origin="$(git -C "$KLIPPER_DIR" remote get-url origin 2>/dev/null || true)"
         if [[ "$origin" != "$BIOKALICO_ORIGIN" ]]; then
@@ -274,6 +281,10 @@ seed_printer_data_config() {
 ### submodules (deps/mainsail, deps/moonraker, deps/crowsnest) ###############
 
 sync_submodules() {
+    if [[ "${BIOKALICO_SKIP_SUBMODULE_SYNC:-0}" == "1" ]]; then
+        log "submodules: preserving the dependency worktrees supplied by snapshot deployment"
+        return
+    fi
     # git needs ca-certificates for https, and this can run before
     # install_klipper_packages().
     if command -v apt-get >/dev/null 2>&1 && [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then

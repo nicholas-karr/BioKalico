@@ -14,9 +14,17 @@ class PrinterShim:
 
         def __init__(self):
             self.ready_gcode_handlers = {}
+            self.mux_commands = {}
 
         def register_command(self, cmd, func, *_, **__):
             self.ready_gcode_handlers[cmd.upper()] = func
+
+        def register_mux_command(self, cmd, key, value, func, *_, **__):
+            values = self.mux_commands.setdefault(cmd.upper(), (key, {}))[1]
+            values[value] = func
+            self.register_command(
+                cmd, lambda gcmd: values[gcmd.get(key, None)](gcmd)
+            )
 
         def respond_info(self, msg):
             print("info", msg)

@@ -227,6 +227,36 @@ trapq_set_position(struct trapq *tq, double print_time
     list_add_head(&m->node, &tq->history);
 }
 
+// Return moves still waiting in the movement queue, oldest first
+int __visible
+trapq_extract_pending(struct trapq *tq, struct pull_move *p, int max
+                      , double start_time, double end_time)
+{
+    int res = 0;
+    struct move *head_sentinel = list_first_entry(&tq->moves, struct move,node);
+    struct move *tail_sentinel = list_last_entry(&tq->moves, struct move, node);
+    struct move *m = list_next_entry(head_sentinel, node);
+    for (; m != tail_sentinel && res < max; m = list_next_entry(m, node)) {
+        if (start_time >= m->print_time + m->move_t)
+            continue;
+        if (end_time <= m->print_time)
+            break;
+        p->print_time = m->print_time;
+        p->move_t = m->move_t;
+        p->start_v = m->start_v;
+        p->accel = 2. * m->half_accel;
+        p->start_x = m->start_pos.x;
+        p->start_y = m->start_pos.y;
+        p->start_z = m->start_pos.z;
+        p->x_r = m->axes_r.x;
+        p->y_r = m->axes_r.y;
+        p->z_r = m->axes_r.z;
+        p++;
+        res++;
+    }
+    return res;
+}
+
 // Return history of movement queue
 int __visible
 trapq_extract_old(struct trapq *tq, struct pull_move *p, int max

@@ -44,6 +44,8 @@ installer, and development.
   then runs `install-image-display-service.sh`.
 - `projector_backends.py`: projector serial command sets (Optoma only).
 - `sla_video_runtime.py`: video loading and frame decoding with ffmpeg.
+- `calibration_patterns.py`: the focus and build plate rectangle patterns
+  used by the calibration wizard.
 - `send-image.py`: sends one command to the server from the shell.
 - `gen-test-images.py`: generates test patterns and sends them to the server.
 
@@ -151,7 +153,16 @@ python3 send-image.py localhost 5555 '{"type":"CLEAR"}'
 
 Server commands: `DISPLAY_IMAGE`, `CLEAR`, `LOAD_VIDEO`,
 `LOAD_VIDEOS_FROM_GCODE`, `SHOW_VIDEO_FRAME`, `LIST_VIDEOS`, `UNLOAD_VIDEO`,
-`UNLOAD_ALL`, `PROJECTOR_ON`, `PROJECTOR_OFF`, `STATUS`.
+`UNLOAD_ALL`, `PROJECTOR_ON`, `PROJECTOR_OFF`, `STATUS`,
+`CALIBRATION_PATTERN`.
+
+`DISPLAY_IMAGE` and `SHOW_VIDEO_FRAME` take an optional
+`"plate_rect":[x,y,width,height]` in projector pixels. The whole image is
+stretched onto that rectangle instead of being centered. The calibration
+wizard sets it from the saved build plate rectangle.
+`CALIBRATION_PATTERN` takes `"pattern":"focus"`, or `"pattern":"rect"` with
+`"rect":[x,y,width,height]` for a white rectangle, and draws it at the
+projector's native resolution.
 
 `gen-test-images.py` draws a test pattern and sends it. It needs Pillow, so
 run it with the Klipper Python. The `DISPLAY_TEST_*` macros in

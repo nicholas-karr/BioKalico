@@ -118,6 +118,8 @@ want from `/tmp/full.config` into an `overrides:` block in `printer.cfg`
 |---|---|---|---|
 | `stm32h743_mainboard` | LDO Leviathan V1.3 (this printer's `[mcu]`) | Katapult, 128KiB offset | `printer.cfg`'s header comment says "V1.1"; that's stale, the chip is H743 (V1.3). |
 | `rp2040_nitehawk_sb` | LDO Nitehawk SB (`[mcu nhk]`) | Katapult, 16KiB offset | Wrong offset erases Katapult - confirmed against LDO's docs. |
+| `rp2040_skr_pico` | BIGTREETECH SKR Pico V1.0 | None (RP2040 ROM bootloader), no offset | The panel flashes it through the ROM bootloader. For a brand-new board, see "First flash of an RP2040 board" below. |
+| `stm32f042_klipper_expander` | Voron Klipper Expander (STM32F042F6P6) | Katapult, 8KiB offset | Katapult is 4.5KiB, too big for a 4KiB offset. The first flash is by hand, see "First flash of the Klipper Expander" below. |
 | `stm32f405_toolhead` | Toolchanger toolhead board | Katapult, 32KiB offset | |
 | `stm32g0b1_ebb36` | BIGTREETECH EBB36 CAN V1.2, over USB-C | None, no offset | The panel flashes it through the chip's DFU mode. To flash it by hand, see "Flashing by hand in DFU mode" below. |
 
@@ -170,6 +172,68 @@ Katapult.
    `/dev/serial/by-id/usb-Klipper_stm32g0b1xx_...-if00`. Use that path for
    `serial` in `[mcu]` and for `device` in its `[firmware_build]` section.
    From here on the panel can flash it.
+
+### First flash of an RP2040 board
+
+A new SKR Pico runs no Klipper, so the panel cannot ask it to reboot. Put it
+in its ROM bootloader by hand instead. This applies to any RP2040 board
+without Katapult.
+
+1. Build the preset:
+   ```bash
+   cd ~/klipper
+   cp biokalico_extras/firmware_presets/rp2040_skr_pico.config /tmp/pico.config
+   make KCONFIG_CONFIG=/tmp/pico.config olddefconfig
+   make KCONFIG_CONFIG=/tmp/pico.config OUT=/tmp/pico/
+   ```
+2. Unplug the board, hold its BOOT button, plug in the USB cable, then
+   release the button. `lsusb` should list `2e8a:0003`. Do this for one
+   board at a time.
+3. Flash it:
+   ```bash
+   make KCONFIG_CONFIG=/tmp/pico.config OUT=/tmp/pico/ flash FLASH_DEVICE=2e8a:0003
+   ```
+   Alternatively, copy `/tmp/pico/klipper.uf2` onto the `RPI-RP2` drive that
+   appears in step 2.
+4. The board restarts into Klipper and is listed as
+   `/dev/serial/by-id/usb-Klipper_rp2040_<serial>-if00`. Every board has its
+   own serial, so two SKR Picos never share a path. Use each path for
+   `serial` in its `[mcu]` section and for `device` in its `[firmware_build]`
+   section. From here on the panel can flash it.
+
+### First flash of the Klipper Expander
+
+A new Klipper Expander has no Katapult, so the first flash is by hand through
+the chip's DFU mode. It writes Katapult at the start of flash and Klipper
+8KiB in. After this the panel flashes it over Katapult.
+
+1. Build Katapult (once, in `~/katapult`) and the Klipper preset:
+   ```bash
+   cd ~/katapult
+   printf 'CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32F042=y\nCONFIG_STM32_FLASH_START_2000=y\nCONFIG_STM32_CLOCK_REF_INTERNAL=y\nCONFIG_STM32_USB_PA11_PA12_REMAP=y\nCONFIG_ENABLE_DOUBLE_RESET=y\n' > /tmp/katapult.config
+   make KCONFIG_CONFIG=/tmp/katapult.config olddefconfig
+   make KCONFIG_CONFIG=/tmp/katapult.config OUT=/tmp/katapult/
+   cd ~/klipper
+   cp biokalico_extras/firmware_presets/stm32f042_klipper_expander.config /tmp/expander.config
+   make KCONFIG_CONFIG=/tmp/expander.config olddefconfig
+   make KCONFIG_CONFIG=/tmp/expander.config OUT=/tmp/expander/
+   ```
+2. Unplug USB, fit the boot jumper, plug USB back in, then press RST.
+   `lsusb` should list `0483:df11`.
+3. Write both images. `dfu-util` needs `sudo` to open the device:
+   ```bash
+   sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D /tmp/katapult/katapult.bin
+   sudo dfu-util -d 0483:df11 -a 0 -s 0x08002000:leave -D /tmp/expander/klipper.bin
+   ```
+4. Remove the boot jumper and press RST. While the jumper is fitted, every
+   reset goes back to DFU. The board is listed as
+   `/dev/serial/by-id/usb-Klipper_stm32f042x6_<serial>-if00`. Use that path
+   for `serial` in its `[mcu]` section and for `device` in its
+   `[firmware_build]` section.
+
+The chip has 32KiB of flash, 24KiB of it for Klipper, so the preset switches
+off the features the board cannot use (see the preset's header). Re-enable
+one only after checking that `make` still fits.
 
 ## Build folders, parallel builds, ccache
 

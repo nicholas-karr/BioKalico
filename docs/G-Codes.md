@@ -1005,25 +1005,40 @@ idle timeout (in seconds).
 The following commands are available when the
 [image_display config section](Config_Reference.md#image_display) is
 enabled. Each command fails if the image display server reports an
-error or does not answer within the configured `timeout`. Every other
-command cancels a pending `PROJECTOR_STANDBY`.
+error or does not answer within the configured `timeout`. The
+projector also turns itself off after 5 minutes without any of these
+commands, and after a cancelled or failed print. This also applies to
+a paused print, so it can sit paused for days without the lamp running.
+`DISPLAY_IMAGE` and `SHOW_VIDEO_FRAME` turn the projector back on first
+if it was turned off this way, which is what makes Resume safe. A print
+that is actively running never triggers the shutdown.
 
 #### PROJECTOR_ON
-`PROJECTOR_ON`: Turn the projector on and wait, for up to
+`PROJECTOR_ON [WAIT=<0|1>]`: Turn the projector on and wait, for up to
 `startup_timeout` seconds, until the image display window is shown on
 the projector at its native resolution. The printer stays busy while it
 waits. If the wait times out during a print, the print is paused instead
 of failing, and the reason is shown in Mainsail and reported as
 `pause_reason` in the [status](Status_Reference.md#image_display).
 
+With `WAIT=0` the command returns at once and keeps starting the
+projector in the background, for up to `startup_timeout` seconds, so the
+printer can move meanwhile. The projector is ready when `display_ready`
+in the [status](Status_Reference.md#image_display) turns true. The
+Mainsail calibration wizard uses this to home Z while the projector warms
+up.
+
 #### PROJECTOR_OFF
 `PROJECTOR_OFF`: Turn the projector off. The projector usually needs
 about 30 seconds to turn back on.
 
 #### PROJECTOR_STANDBY
-`PROJECTOR_STANDBY`: Turn the projector off 5 minutes from now, unless
-another command is sent to the image display server first. This avoids
-the startup delay when the projector is needed again soon.
+`PROJECTOR_STANDBY`: Start the 5 minute countdown to turning the
+projector off now. Any other command restarts the countdown, which
+avoids the startup delay when the projector is needed again soon.
+Klipper also starts it on its own at startup and whenever a print is
+cancelled or fails, so this is only needed to start it sooner, for
+example at the end of a print.
 
 #### DISPLAY_IMAGE
 `DISPLAY_IMAGE PATH=<path> [ROTATION=<0|90|180|270>]`: Show an image
@@ -1205,6 +1220,61 @@ reports not triggered). Normally future G-Code commands will be
 scheduled to run after the stepper move completes, however if a manual
 stepper move uses SYNC=0 then future G-Code movement commands may run
 in parallel with the stepper movement.
+
+### [plate_calibration]
+
+The following commands are available when the
+[plate_calibration config section](Config_Reference.md#plate_calibration)
+is enabled. The Mainsail calibration wizard sends them. None of them
+moves the printer: jog the axes first, then save.
+
+A saved position is used by prints. When a print selects a material
+with [SELECT_MATERIAL](#select_material), the position saved for the
+toolhead or material selector that holds the material becomes the
+print's origin: the projector focus height is Z0 of an SLA material,
+and a nozzle's saved corner is X0 Y0 Z0 of that nozzle's materials. It
+is set as the g-code offset, as with `SET_GCODE_OFFSET`, and taken off
+again when the print ends, is cancelled or fails, and while the printer
+homes. Outside a print nothing changes, so jogging and the wizard stay
+in machine coordinates.
+
+A saved nozzle position is also applied to the nozzle's `[tool <name>]`
+section as `gcode_x_offset`, `gcode_y_offset` and `gcode_z_offset`
+when that section exists.
+
+#### CAL_PROJECTOR_FOCUS_START
+`CAL_PROJECTOR_FOCUS_START`: Show a pattern of fine lines and sharp
+corners on the projector. Jog Z until it is sharp.
+
+#### CAL_PROJECTOR_FOCUS_SAVE
+`CAL_PROJECTOR_FOCUS_SAVE`: Save the current Z as the projector focus
+height. Z must be homed.
+
+#### CAL_PLATE_RECT
+`CAL_PLATE_RECT X=<pixels> Y=<pixels> W=<pixels> H=<pixels>`: Show a
+white rectangle on the projector, with X and Y the top left corner in
+projector pixels. It is not saved. Resize it until it covers the build
+plate and no light reaches the bed below.
+
+#### CAL_PLATE_RECT_SAVE
+`CAL_PLATE_RECT_SAVE X=<pixels> Y=<pixels> W=<pixels> H=<pixels>`: Save
+the rectangle. From then on, every image and video frame is stretched
+onto it.
+
+#### CAL_PLATE_RECT_CLEAR
+`CAL_PLATE_RECT_CLEAR`: Forget the rectangle, so images fill the
+projector again.
+
+#### CAL_TOOL_SAVE
+`CAL_TOOL_SAVE TOOL=<name>`: Save the current position as the front
+left corner of the build plate for that nozzle. X, Y and Z must be
+homed.
+
+#### CAL_TOOL_CLEAR
+`CAL_TOOL_CLEAR TOOL=<name>`: Forget the saved position of a nozzle.
+
+#### CAL_CANCEL
+`CAL_CANCEL`: Clear the pattern shown by a calibration command.
 
 ### [materials]
 
@@ -1835,6 +1905,30 @@ for more info on those parameters.
 #### RESET_SMART_EFFECTOR
 `RESET_SMART_EFFECTOR`: Resets Smart Effector sensitivity to its factory
 settings. Requires `control_pin` to be provided in the config section.
+
+### [stall_monitor]
+
+The following commands are available when the
+[stall_monitor config section](Config_Reference.md#stall_monitor) is
+enabled.
+
+#### SET_STALL_MONITOR
+`SET_STALL_MONITOR MONITOR=<config_name> [ENABLE=<0|1>]
+[ACTION=<shutdown|report>] [TRIP_RATIO=<ratio>] [CLEAR=<0|1>]`: Change
+stall detection for one monitor until the next restart. `ENABLE=0`
+stops all checks, for example around a macro that pushes against
+something on purpose. `ACTION` and `TRIP_RATIO` override the config
+options of the same name. `CLEAR=1` forgets the learned readings and
+the counters. Use it after changing a motor's current at run-time,
+because the learned readings no longer apply.
+
+#### QUERY_STALL_MONITOR
+`QUERY_STALL_MONITOR MONITOR=<config_name>`: Report whether stall
+detection is enabled, for how long motion was checked, how many stalls
+were detected, and for each stepper whether the driver or the host does
+the checking and the lowest reading seen as a fraction of the lowest
+normal reading for its motion. After a normal print, that fraction
+shows how much margin there is above `trip_ratio`.
 
 ### [stepper_enable]
 

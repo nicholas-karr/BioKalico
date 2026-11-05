@@ -1,0 +1,17 @@
+# Test case for z_only kinematics
+CONFIG z_only.cfg
+DICTIONARY atmega2560.dict
+
+G28
+G90
+G1 Z0.02 F7800
+G1 Z0.04
+G1 Z10
+G91
+G1 Z-5
+G90
+G28 X
+G92 Z10
+M84
+G28 Z
+G1 Z5

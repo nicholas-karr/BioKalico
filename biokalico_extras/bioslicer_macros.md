@@ -40,6 +40,21 @@ the delay before exposure, shows the frame, then applies the exposure time
 and the delay after it for extruder `<i>` (0-based), from the sliced values
 or their `BIOSLICER_OVERRIDE` overrides.
 
+## `BIOSLICER_DROPLET EXTRUDER=<i> X=<mm> Y=<mm> Z=<mm> SAFE_Z=<mm> VOLUME_NL=<nL> COUNT=<n>`
+
+Emitted once per droplet for a droplet channel (`channel_type` `droplet`),
+after the SLA exposures of the layer the droplet lands on. Defined in
+`printer/droplet_macros.cfg`: it rises to `SAFE_Z`, moves over the point,
+lowers to `Z`, waits the settle time, and fires `COUNT` pulses of
+`VOLUME_NL / droplet_nl_per_us` microseconds at `droplet_frequency` through
+the `[pulse_pin]` named in the macro's `pin` variable. The three parameters
+come from `BIOSLICER_PROCESS_PARAMS` (keyed by extruder like the SLA times)
+or their `BIOSLICER_OVERRIDE` overrides. The slicer already rejects pulses
+shorter than 100 us and more than 10% duty, the limits of `pulse_pin`; the
+macro checks them again. The material of the droplet channel is selected
+beforehand by `SELECT_MATERIAL`, so a droplet material needs an entry in
+`materials.cfg` with `params_channel_type: droplet`.
+
 ## `SLA_CLEAR`
 
 Must black out the projector immediately. Called as the first command of

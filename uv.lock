@@ -483,7 +483,7 @@ dev = [
     { name = "pre-commit", specifier = ">=4.0.1" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-xdist", specifier = ">=3.6.1" },
-    { name = "ruff", specifier = ">=0.9.3" },
+    { name = "ruff", specifier = "==0.9.3" },
 ]
 
 [[package]]

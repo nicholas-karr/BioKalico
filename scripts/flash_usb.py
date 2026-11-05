@@ -164,9 +164,30 @@ def call_dfuutil(flags, binfile, sudo):
     if sudo:
         args.insert(0, "sudo")
     sys.stderr.write(" ".join(args) + "\n\n")
-    res = subprocess.call(args)
-    if res != 0:
-        raise error("Error running dfu-util")
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    output = b""
+    while True:
+        data = os.read(proc.stdout.fileno(), 4096)
+        if not data:
+            break
+        output += data
+        sys.stderr.write(data.decode(errors="replace"))
+        sys.stderr.flush()
+    proc.stdout.close()
+    res = proc.wait()
+    if res == 0:
+        return
+    # The STM32 ROM bootloader resets as soon as it gets the leave request,
+    # so dfu-util's follow-up get_status fails with EX_IOERR (74). dfu-util
+    # only prints "File downloaded successfully" once every block has been
+    # written, before it sends the leave request.
+    leave = any(flag.endswith(":leave") for flag in flags)
+    if leave and res == 74 and b"File downloaded successfully" in output:
+        sys.stderr.write("Device reset on leave request; download completed\n")
+        return
+    raise error("Error running dfu-util")
 
 
 # Flash via a call to dfu-util

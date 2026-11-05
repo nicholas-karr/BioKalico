@@ -23,12 +23,13 @@ _PROJECTOR_POLL = (
 _PROJECTOR_KICK_INTERVAL = (
     5.0  # min seconds between re-issued PROJECTOR_ON serial kicks
 )
-_STANDBY_DELAY = 300.0  # 5 minutes
+_STANDBY_DELAY = 300.0  # 5 minutes without a command before power-off
 _RECONNECT_WARN_INTERVAL = 60.0  # minimum seconds between reconnection warnings
 _STATUS_POLL_INTERVAL = 5.0  # seconds between background status polls
 _STATUS_STALE_THRESHOLD = (
     3 * _STATUS_POLL_INTERVAL
 )  # cache older than this is stale
+_ABORT_CLEAR_ATTEMPTS = 3  # tries to clear the projector after an aborted print
 _THREAD_JOIN_TIMEOUT = 2.0  # seconds to wait for worker/poll threads to exit
 
 
@@ -41,6 +42,10 @@ class ImageDisplay:
         self.auth_token = config.get("auth_token", "").strip()
         self._load_timeout = config.getfloat("load_timeout", 120.0, above=0.0)
         self.h_offset = config.getfloat("h_offset", 0.0)
+        # Calibrated build plate rectangle (x, y, w, h in projector pixels).
+        # While set, every image is stretched onto it. Set by
+        # plate_calibration.
+        self.plate_rect = None
 
         self._startup_timeout = config.getfloat(
             "startup_timeout", 300.0, minval=0.0
@@ -59,6 +64,16 @@ class ImageDisplay:
         self._cmd_queue = queue.Queue()
         self._standby_timer = None
         self._standby_waketime: float = 0.0
+        # True after the idle timer turned the projector off. The next
+        # command that shows an image turns it back on first.
+        self._idled_off = False
+        # Timer that keeps a background PROJECTOR_ON WAIT=0 going, and the
+        # thread running its xrandr nudge so the reactor never waits on it.
+        self._warmup_timer = None
+        self._warmup_active = False
+        self._warmup_deadline = 0.0
+        self._warmup_last_kick = -1e9
+        self._nudge_thread = None
         self._last_reconnect_warn = 0.0
         # Why a mid-print PROJECTOR_ON timeout paused the print, shown in
         # Mainsail. None when the projector is ready.
@@ -81,7 +96,12 @@ class ImageDisplay:
 
         gcode = self.printer.lookup_object("gcode")
         for name, handler, desc in [
-            ("PROJECTOR_ON", self.cmd_PROJECTOR_ON, "Turn on the projector"),
+            (
+                "PROJECTOR_ON",
+                self.cmd_PROJECTOR_ON,
+                "Turn on the projector and wait until it is ready. "
+                "WAIT=0 starts it in the background instead",
+            ),
             ("PROJECTOR_OFF", self.cmd_PROJECTOR_OFF, "Turn off the projector"),
             (
                 "DISPLAY_IMAGE",
@@ -126,7 +146,7 @@ class ImageDisplay:
             (
                 "PROJECTOR_STANDBY",
                 self.cmd_PROJECTOR_STANDBY,
-                "Turn off the projector after 5 minutes if no image_display commands arrive",
+                "Turn off the projector after 5 minutes if no image_display commands arrive (also done automatically)",
             ),
             (
                 "_SET_IMAGE_H_OFFSET",
@@ -139,6 +159,12 @@ class ImageDisplay:
         self.printer.register_event_handler(
             "klippy:disconnect", self._on_disconnect
         )
+        self.printer.register_event_handler("klippy:ready", self._arm_standby)
+        for event in (
+            "print_stats:cancelled_printing",
+            "print_stats:error_printing",
+        ):
+            self.printer.register_event_handler(event, self._on_print_aborted)
 
     def _connect(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -228,7 +254,10 @@ class ImageDisplay:
             return None  # reactor is shutting down; callers check for None
 
     def _send(self, cmd: dict, timeout: float = None) -> dict:
-        self._cancel_standby()
+        if cmd.get("type") == "PROJECTOR_OFF":
+            self._cancel_standby()
+        else:
+            self._arm_standby()
         if self.auth_token:
             cmd = dict(cmd, auth_token=self.auth_token)
         result_q = queue.Queue()
@@ -375,13 +404,91 @@ class ImageDisplay:
         )
 
     def cmd_PROJECTOR_ON(self, gcmd):
-        self._cancel_standby()
+        if gcmd.get_int("WAIT", 1, minval=0, maxval=1) == 0:
+            self._power_on_background(gcmd)
+            return
+        self._power_on(gcmd)
+
+    def _power_on_background(self, gcmd):
+        """Start the projector without holding the G-code queue.
+
+        Returns at once, so the printer can move while the projector warms
+        up. The display is ready when `display_ready` turns true in the
+        status. A start already under way is left alone.
+        """
+        self._arm_standby()
+        reactor = self.printer.get_reactor()
+        if self._status_cache.get("display_ready"):
+            self._idled_off = False
+            gcmd.respond_info("image_display: the projector is ready")
+            return
+        if self._warmup_active:
+            return
+        self._warmup_active = True
+        self._warmup_deadline = reactor.monotonic() + self._startup_timeout
+        self._warmup_last_kick = -1e9
+        if self._warmup_timer is None:
+            self._warmup_timer = reactor.register_timer(self._warmup_tick)
+        reactor.update_timer(self._warmup_timer, reactor.NOW)
+        gcmd.respond_info(
+            "image_display: starting the projector in the background (up to "
+            "%.0fs; it may still be cooling down)" % self._startup_timeout
+        )
+
+    def _warmup_tick(self, eventtime):
+        reactor = self.printer.get_reactor()
+        now = reactor.monotonic()
+        if self._status_cache.get("display_ready"):
+            self._pause_reason = None
+            self._idled_off = False
+            logger.info("image_display: projector display ready")
+        elif now >= self._warmup_deadline:
+            logger.error(
+                "image_display: the projector did not become ready within "
+                "%.0fs",
+                self._startup_timeout,
+            )
+        else:
+            # Same re-kick and screen nudge as the waiting PROJECTOR_ON.
+            if now - self._warmup_last_kick >= _PROJECTOR_KICK_INTERVAL:
+                self._send_fire_and_forget({"type": "PROJECTOR_ON"})
+                self._warmup_last_kick = now
+                self._nudge_screen_in_background()
+            return now + _PROJECTOR_KICK_INTERVAL
+        self._warmup_active = False
+        return reactor.NEVER
+
+    def _nudge_screen_in_background(self):
+        # xrandr can take seconds, which must not stall the reactor.
+        if self._nudge_thread is not None and self._nudge_thread.is_alive():
+            return
+
+        def nudge():
+            if not self.screen_detect_path or self._is_screen_connected():
+                self._activate_screen_output()
+
+        self._nudge_thread = threading.Thread(target=nudge, daemon=True)
+        self._nudge_thread.start()
+
+    def _wake_if_idled_off(self, gcmd):
+        """Bring the projector back after the idle timer turned it off.
+
+        Returns False if it is still not ready (a print was paused for it),
+        in which case the caller must not show anything.
+        """
+        if self._idled_off:
+            self._power_on(gcmd)
+        return not self._idled_off
+
+    def _power_on(self, gcmd):
+        self._arm_standby()
         toolhead = self.printer.lookup_object("toolhead")
         reactor = self.printer.get_reactor()
 
         deadline = reactor.monotonic() + self._startup_timeout
         last_kick = -1e9
         last_status = "starting"
+        announced = False
         while reactor.monotonic() < deadline:
             now = reactor.monotonic()
             # (Re-)issue the turn-on command periodically. Each issue powers the
@@ -414,11 +521,19 @@ class ImageDisplay:
                     window.get("display_name") or "?",
                 )
                 self._pause_reason = None
+                self._idled_off = False
                 return
             last_status = self._status_summary(resp)
             logger.info(
                 "image_display: PROJECTOR_ON not ready (%s)", last_status
             )
+            if not announced:
+                announced = True
+                gcmd.respond_info(
+                    "image_display: waiting for the projector to start up "
+                    "(up to %.0fs; it may still be cooling down)"
+                    % self._startup_timeout
+                )
 
         timeout_message = (
             "PROJECTOR_ON: timed out after %.0fs waiting for projector "
@@ -449,17 +564,35 @@ class ImageDisplay:
         gcode.run_script_from_command("PAUSE")
 
     def cmd_PROJECTOR_OFF(self, gcmd):
+        self._idled_off = False
         resp = self._send({"type": "PROJECTOR_OFF"})
         self._require_ok(gcmd, resp)
         link_error = resp.get("projector_link_error")
         if link_error:
             gcmd.respond_info("image_display: %s" % link_error)
 
+    def set_plate_rect(self, rect):
+        self.plate_rect = None if rect is None else list(rect)
+
+    def show_calibration_pattern(self, gcmd, pattern, rect=None):
+        """Show the 'focus' pattern or a white 'rect' on the projector."""
+        if not self._wake_if_idled_off(gcmd):
+            raise gcmd.error("image_display: the projector is not ready")
+        cmd = {"type": "CALIBRATION_PATTERN", "pattern": pattern}
+        if rect is not None:
+            cmd["rect"] = list(rect)
+        self._require_ok(gcmd, self._send(cmd))
+
+    def clear_pattern(self, gcmd):
+        self._require_ok(gcmd, self._send({"type": "CLEAR"}))
+
     def cmd_SET_IMAGE_H_OFFSET(self, gcmd):
         self.h_offset = gcmd.get_float("OFFSET")
         gcmd.respond_info("Image h_offset set to %.3f px" % self.h_offset)
 
     def cmd_DISPLAY_IMAGE(self, gcmd):
+        if not self._wake_if_idled_off(gcmd):
+            return
         path = gcmd.get("PATH")
         rotation = gcmd.get_int("ROTATION", 0, minval=0, maxval=270)
         if rotation not in (0, 90, 180, 270):
@@ -475,6 +608,7 @@ class ImageDisplay:
                     "path": path,
                     "rotation": rotation,
                     "h_offset": self.h_offset,
+                    "plate_rect": self.plate_rect,
                 }
             ),
         )
@@ -495,12 +629,15 @@ class ImageDisplay:
         )
 
     def cmd_SHOW_VIDEO_FRAME(self, gcmd):
+        if not self._wake_if_idled_off(gcmd):
+            return
         resp = self._send(
             {
                 "type": "SHOW_VIDEO_FRAME",
                 "name": gcmd.get("NAME"),
                 "frame": gcmd.get_int("FRAME", minval=0),
                 "h_offset": self.h_offset,
+                "plate_rect": self.plate_rect,
             }
         )
         if resp.get("status") != "success":
@@ -549,6 +686,17 @@ class ImageDisplay:
         gcmd.respond_info("Loaded %d video(s)" % len(resp.get("loaded", [])))
 
     def cmd_PROJECTOR_STANDBY(self, gcmd):
+        self._arm_standby()
+        gcmd.respond_info(
+            "Projector standby armed: off in %.0fs" % _STANDBY_DELAY
+        )
+
+    def _arm_standby(self, eventtime=None):
+        """(Re)start the idle countdown that ends in PROJECTOR_OFF.
+
+        Called on every command and when a print ends or aborts, so the
+        projector powers down once nothing has used it for _STANDBY_DELAY.
+        """
         self._cancel_standby()
         reactor = self.printer.get_reactor()
         waketime = reactor.monotonic() + _STANDBY_DELAY
@@ -556,9 +704,6 @@ class ImageDisplay:
             self._standby_callback, waketime
         )
         self._standby_waketime = waketime
-        gcmd.respond_info(
-            "Projector standby armed: off in %.0fs" % _STANDBY_DELAY
-        )
 
     def _cancel_standby(self):
         if self._standby_timer is not None:
@@ -567,9 +712,23 @@ class ImageDisplay:
             self._standby_timer = None
             self._standby_waketime = 0.0
 
+    def _print_running(self, eventtime):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        if print_stats is None:
+            return False
+        state = print_stats.get_status(eventtime)["state"]
+        return state == "printing"
+
     def _standby_callback(self, eventtime):
+        if self._print_running(eventtime):
+            # A long exposure is not idleness; the lamp must not drop out of
+            # a print that is still going. A paused print is idle, and the
+            # next image command wakes the projector.
+            self._standby_waketime = eventtime + _STANDBY_DELAY
+            return self._standby_waketime
         self._standby_timer = None
         self._standby_waketime = 0.0
+        self._idled_off = True
         self._send_fire_and_forget({"type": "PROJECTOR_OFF"})
         return self.printer.get_reactor().NEVER
 
@@ -636,6 +795,63 @@ class ImageDisplay:
             "status_stale": status_stale,
         }
         return result
+
+    def _on_print_aborted(self):
+        # An aborted print skips its trailing SLA_CLEAR, so the last layer
+        # would stay lit. The CLEAR is queued here so it stays ahead of any
+        # command from a following print; a reactor callback then confirms
+        # it and retries, since a dropped clear is otherwise silent. The
+        # skipped PRINT_END would also have armed standby, so do that here
+        # to keep the projector from staying powered after the abort. The
+        # pause it explained is over too, so stop showing its reason.
+        self._pause_reason = None
+        self._arm_standby()
+        result_q = self._queue_clear()
+        self.printer.get_reactor().register_callback(
+            lambda eventtime: self._confirm_clear(result_q)
+        )
+
+    def _queue_clear(self):
+        cmd = {"type": "CLEAR"}
+        if self.auth_token:
+            cmd["auth_token"] = self.auth_token
+        result_q = queue.Queue()
+        self._cmd_queue.put((cmd, result_q))
+        return result_q
+
+    def _confirm_clear(self, result_q):
+        reactor = self.printer.get_reactor()
+        failure = "no response"
+        for attempt in range(_ABORT_CLEAR_ATTEMPTS):
+            if attempt:
+                result_q = self._queue_clear()
+            deadline = reactor.monotonic() + self.timeout + 1.0
+            eventtime = reactor.monotonic()
+            while eventtime is not None and eventtime < deadline:
+                try:
+                    status, value = result_q.get_nowait()
+                except queue.Empty:
+                    eventtime = self._pause(reactor, eventtime)
+                    continue
+                if status == "ok" and value.get("status") == "success":
+                    return
+                failure = (
+                    value.get("message", "unknown error")
+                    if status == "ok"
+                    else str(value)
+                )
+                break
+            if eventtime is None:
+                return  # reactor is shutting down
+        logger.error(
+            "image_display: could not clear the projector after the print "
+            "ended (%s)",
+            failure,
+        )
+        self.printer.lookup_object("gcode").respond_info(
+            "WARNING: the projector may still be showing an image from the "
+            "ended print (%s). Run CLEAR_DISPLAY." % failure
+        )
 
     def _on_disconnect(self):
         self._cancel_standby()

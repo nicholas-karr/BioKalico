@@ -994,6 +994,32 @@ anchor_z:
 #   These parameters must be provided.
 ```
 
+### Z-only Kinematics
+
+Z-only kinematics drives a single Z axis, for machines such as SLA
+printers that move a build plate up and down but have no X or Y axis.
+Moves that change X or Y are rejected with an error. `G28` homes Z and
+ignores any X or Y request.
+
+Only parameters specific to Z-only printers are described here - see
+[common kinematic settings](#common-kinematic-settings) for available
+parameters.
+
+```
+[printer]
+kinematics: z_only
+max_z_velocity:
+#   This sets the maximum velocity (in mm/s) of movement along the z
+#   axis. The default is to use max_velocity for max_z_velocity.
+max_z_accel:
+#   This sets the maximum acceleration (in mm/s^2) of movement along
+#   the z axis. The default is to use max_accel for max_z_accel.
+
+# The stepper_z section is used to describe the stepper controlling
+# the Z axis.
+[stepper_z]
+```
+
 ### None Kinematics
 
 It is possible to define a special "none" kinematics to disable
@@ -4519,6 +4545,13 @@ uart_pin:
 #   A comma separated list of pins to set prior to accessing the
 #   tmc2208 UART. This may be useful for configuring an analog mux for
 #   UART communication. The default is to not configure any pins.
+#uart_baud:
+#   The bit rate of the UART link to the driver. A higher rate makes
+#   each register read shorter, which matters to modules that read the
+#   driver often, such as [stall_monitor]. Drivers sharing a UART pin
+#   must use the same rate. On an RP2040, 160000 worked reliably;
+#   slower micro-controllers may not manage it. The default is 40000
+#   (9000 on AVR micro-controllers).
 #interpolate: True
 #   If true, enable step interpolation (the driver will internally
 #   step at a rate of 256 micro-steps). This interpolation does
@@ -4582,6 +4615,7 @@ by the name of the corresponding stepper config section (for example,
 uart_pin:
 #tx_pin:
 #select_pins:
+#uart_baud:
 #interpolate: True
 run_current:
 #hold_current:
@@ -6518,6 +6552,29 @@ and [status reference](Status_Reference.md#image_display).
 #   The default is not to check the file.
 ```
 
+### [plate_calibration]
+
+Remembers the projector focus height, the build plate rectangle and
+each nozzle's front left corner of the build plate between restarts.
+The values are set in Mainsail from the projector card and kept in a
+state file, not in the printer config, so saving them does not restart
+Klipper. Requires an [image_display](#image_display) section for the
+projector steps. See the [g-code commands](G-Codes.md#plate_calibration)
+and [status reference](Status_Reference.md#plate_calibration).
+
+```
+[plate_calibration]
+#state_file: ~/printer_data/config/plate_calibration_state.cfg
+#   The file the calibration is saved to. The default is
+#   ~/printer_data/config/plate_calibration_state.cfg.
+#sla_tool: sla
+#   The name the projector's focus height is saved under. Give it the
+#   name of the [material_selector] section of the SLA materials, so a
+#   print that selects one of them gets the saved height as its Z0. If
+#   a [tool sla] section exists, the saved height is also applied to it
+#   as its gcode_z_offset. The default is sla.
+```
+
 ### [materials]
 
 Material inventory tracking. Material definitions come from
@@ -6596,6 +6653,93 @@ count:
 #params_<name>:
 #   Options starting with "params_" are stored as strings and shown on
 #   the group in Mainsail. params_color is checked as for [material].
+```
+
+### [stall_monitor]
+
+Stop the printer when a watched stepper stalls during a move, for
+example when the toolhead or a lift hits something (one may define any
+number of sections with a "stall_monitor" prefix). Only steppers driven
+by a [tmc2209](#tmc2209) are supported. Give each group of steppers that
+move together a section of its own, for example one for X and Y and one
+for Z.
+
+The driver's stall threshold is a single value, so on its own it only
+fits one speed. This module learns the driver's StallGuard readings for
+each steady motion (the speed and direction of every watched stepper)
+while the printer moves, and treats readings well below the lowest of
+them as a stall. No calibration is needed. The learned readings are
+forgotten on a restart.
+
+The planned moves are read from the motion queue ahead of time, and
+only the stretches of constant speed in them are checked. For a stepper
+whose [tmc2209](#tmc2209) section has a `diag_pin`, the driver does the
+checking: at the start of such a stretch it is given a threshold for
+that motion and a speed gate just below the motion's speed, and the
+micro-controller reports pulses on the pin. This checks every motor
+step and costs the host almost nothing. The same pin and driver
+settings are used for sensorless homing, and are put back before each
+homing move. A stepper without a `diag_pin` is read and compared by the
+host during those stretches, which is slower and uses more host CPU.
+
+A motion is only checked once it has been learned, which takes about a
+second and a half of steady movement. Short moves, and the first moves at a
+new speed or direction, are therefore not protected. Moves made
+with `FORCE_MOVE` or as a `manual_stepper` are not checked either.
+Expect a stall to be noticed after a few millimeters of travel, not at
+the first contact. A motor only stalls once it pushes with its full
+force, so this limits how long a collision lasts, not how hard it is.
+See the [command reference](G-Codes.md#stall_monitor) for run-time
+control.
+
+```
+[stall_monitor my_monitor]
+steppers:
+#   A comma separated list of the steppers to watch, for example
+#   "stepper_x, stepper_y". Each needs a [tmc2209 <stepper>] section
+#   whose stealthchop_threshold is above the printer's top speed,
+#   because the driver only measures load in stealthChop mode. On a
+#   CoreXY printer list both steppers. This parameter must be provided.
+#action: shutdown
+#   What to do when a stall is detected. With "shutdown" the printer is
+#   stopped at once, like an emergency stop: restart the firmware and
+#   home again afterwards. With "report" only a message is shown, which
+#   is useful to check for false alarms on a new machine or toolhead.
+#   The default is shutdown.
+#use_diag_pins: True
+#   Let the driver do the checking for steppers that have a diag_pin
+#   in their tmc2209 section. Set this to False to have the host read
+#   and compare every stepper instead. The default is True.
+#min_velocity: 12
+#   Stepper speed (in mm/s) below which nothing is checked. The
+#   driver's readings are too small to use while the motor turns
+#   slowly, below roughly a third of a revolution per second. Lower it
+#   for a lead screw axis, for example to 1.5 with a 4 mm lead. The
+#   default is 12.
+#trip_ratio: 0.75
+#   A reading counts as low when it is below this fraction of the
+#   lowest normal reading for the same motion. Lower it if
+#   QUERY_STALL_MONITOR shows normal moves coming close to it. The
+#   default is 0.75.
+#trip_count: 2
+#trip_window: 0.25
+#   A stall is detected when trip_count pulses or low readings are seen
+#   within trip_window seconds. A single one is ignored. The defaults
+#   are 2 and 0.25.
+#learn_samples: 16
+#   The number of readings of a motion needed before that motion is
+#   checked. They are taken 30 ms apart, so that they cover the slow
+#   swings in load a motion can have. Fewer readings learn faster but
+#   gave false stalls on fast travel moves. The default is 48.
+#settle_time: 0.1
+#   The time (in seconds) after the start of a stretch of constant
+#   speed before checking starts. The default is 0.1.
+#sample_interval: 0.01
+#   The time (in seconds) between the host's readings of a stepper
+#   that has no diag_pin, once its motion has been learned. A shorter
+#   interval notices fast stalls sooner, but one reading takes about
+#   5 ms at the default uart_baud of the driver, so raise that first
+#   (see the "tmc2208" section). The default is 0.01.
 ```
 
 ### [toolheads]
