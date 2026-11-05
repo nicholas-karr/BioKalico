@@ -29,9 +29,8 @@ CONTAINER_NAME="${CONTAINER_NAME:-biokalico-install-test}"
 HTTP_PORT="${HTTP_PORT:-18080}"
 MOONRAKER_PORT="${MOONRAKER_PORT:-17125}"
 SNAPSHOT_DIR="$(mktemp -d -t biokalico-snapshot-XXXXXX)"
-# Submodules tested from the local working tree. crowsnest is unmodified
-# upstream, so it is fetched normally.
-LOCAL_FORK_SUBMODULES=(mainsail moonraker)
+# Submodules tested from the local working tree, including uncommitted changes.
+LOCAL_FORK_SUBMODULES=(mainsail moonraker crowsnest ad246s-mscope)
 declare -A SUBMODULE_SNAPSHOT_DIRS
 
 DOCKER="docker"
@@ -109,14 +108,9 @@ done
             "file:///mnt/biokalico-submodule-$name"
     done
     git add -A
-    for name in mainsail moonraker crowsnest; do
-        if [[ -n "${SUBMODULE_SNAPSHOT_DIRS[$name]:-}" ]]; then
-            pinned_sha="$(git -C "${SUBMODULE_SNAPSHOT_DIRS[$name]}" rev-parse HEAD)" \
-                || fail "couldn't resolve deps/$name snapshot's commit"
-        else
-            pinned_sha="$(git -C "$REPO_ROOT/deps/$name" rev-parse HEAD)" \
-                || fail "couldn't resolve deps/$name's current commit"
-        fi
+    for name in "${LOCAL_FORK_SUBMODULES[@]}"; do
+        pinned_sha="$(git -C "${SUBMODULE_SNAPSHOT_DIRS[$name]}" rev-parse HEAD)" \
+            || fail "couldn't resolve deps/$name snapshot's commit"
         git update-index --add --cacheinfo 160000,"$pinned_sha",deps/$name
     done
     git commit -q -m "snapshot for docker-test/run.sh"
@@ -167,10 +161,9 @@ $DOCKER exec -u biokalico "$CONTAINER_NAME" \
 log "Running biokalico-installer.sh install (mirrors QUICKSTART.md section 6, step 2)"
 log "(BIOKALICO_ORIGIN is overridden to the mounted snapshot, so this exercises"
 log " today's working tree - see run.sh comments - not whatever's on GitHub;"
-log " deps/{mainsail,moonraker} are the same - their uncommitted working"
-log " trees are snapshotted and mounted too, so this doesn't require pushing"
-log " to GitHub first. deps/crowsnest, unmodified here, still fetches for"
-log " real from its actual origin, so this needs real network access)"
+log " every deps/ submodule is the same - their uncommitted working trees are"
+log " snapshotted and mounted too, so this doesn't require pushing to GitHub"
+log " first)"
 $DOCKER exec -u biokalico -e BIOKALICO_ORIGIN=/mnt/biokalico-snapshot "$CONTAINER_NAME" \
     bash /home/biokalico/klipper/scripts/biokalico-installer.sh install
 install_status=$?
@@ -200,8 +193,9 @@ check_active nginx
 
 if $DOCKER exec "$CONTAINER_NAME" test -f /home/biokalico/klipper/deps/moonraker/moonraker/server.py \
     && $DOCKER exec "$CONTAINER_NAME" test -f /home/biokalico/klipper/deps/mainsail/package.json \
-    && $DOCKER exec "$CONTAINER_NAME" test -f /home/biokalico/klipper/deps/crowsnest/tools/install.sh; then
-    echo "PASS: deps/{moonraker,mainsail,crowsnest} submodules were checked out"
+    && $DOCKER exec "$CONTAINER_NAME" test -f /home/biokalico/klipper/deps/crowsnest/tools/install.sh \
+    && $DOCKER exec "$CONTAINER_NAME" test -f /home/biokalico/klipper/deps/ad246s-mscope/scan/mon.py; then
+    echo "PASS: deps/{moonraker,mainsail,crowsnest,ad246s-mscope} submodules were checked out"
 else
     echo "FAIL: one or more deps/ submodules is missing - git submodule update did not run or failed"
     checks_failed=$((checks_failed + 1))
@@ -217,7 +211,7 @@ fi
 # klipper.service is expected to fail because the installer doesn't create
 # printer.cfg. Check klippy.log to make sure that is the reason.
 klippy_log="$($DOCKER exec "$CONTAINER_NAME" cat /home/biokalico/printer_data/logs/klippy.log 2>&1)"
-if echo "$klippy_log" | grep -qi "printer.cfg"; then
+if echo "$klippy_log" | grep -qi "Unable to open config file.*printer.cfg"; then
     echo "PASS: klipper.service is failing for the expected reason (missing printer.cfg)"
 else
     echo "FAIL: klipper.service is failing, but not (visibly) because of a missing printer.cfg - check the log below"
@@ -229,7 +223,8 @@ fi
 crowsnest_status="$($DOCKER exec "$CONTAINER_NAME" systemctl status crowsnest --no-pager -l 2>&1)"
 if $DOCKER exec "$CONTAINER_NAME" systemctl is-active --quiet crowsnest; then
     echo "PASS: crowsnest.service is active"
-elif echo "$crowsnest_status" | grep -qi "auto-restart\|activating\|failed"; then
+elif $DOCKER exec "$CONTAINER_NAME" systemctl cat crowsnest >/dev/null 2>&1 \
+    && echo "$crowsnest_status" | grep -qi "auto-restart\|activating\|start-limit"; then
     echo "PASS: crowsnest.service is installed and enabled, crash-looping only because there's no real webcam here (expected)"
 else
     echo "FAIL: crowsnest.service is in an unexpected state"
