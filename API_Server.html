@@ -629,6 +629,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Toolheads.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Toolheads
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1767,6 +1788,51 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#materialsset_slot" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_slot
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsclear_slot" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/clear_slot
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsset_uncovered_duration" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_uncovered_duration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsset_definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_definition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsdelete_definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/delete_definition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#pause_resumecancel" class="md-nav__link">
     <span class="md-ellipsis">
       pause_resume/cancel
@@ -1797,6 +1863,42 @@
   <a href="#query_endstopsstatus" class="md-nav__link">
     <span class="md-ellipsis">
       query_endstops/status
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsset_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/set_state
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsreorder_docks" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/reorder_docks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsconfirm_mount" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/confirm_mount
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadscancel_mount" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/cancel_mount
     </span>
   </a>
   
@@ -2508,6 +2610,51 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#materialsset_slot" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_slot
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsclear_slot" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/clear_slot
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsset_uncovered_duration" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_uncovered_duration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsset_definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/set_definition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materialsdelete_definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials/delete_definition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#pause_resumecancel" class="md-nav__link">
     <span class="md-ellipsis">
       pause_resume/cancel
@@ -2538,6 +2685,42 @@
   <a href="#query_endstopsstatus" class="md-nav__link">
     <span class="md-ellipsis">
       query_endstops/status
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsset_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/set_state
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsreorder_docks" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/reorder_docks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadsconfirm_mount" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/confirm_mount
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheadscancel_mount" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads/cancel_mount
     </span>
   </a>
   
@@ -2885,6 +3068,49 @@ and might later produce asynchronous messages such as:</p>
 <ul>
 <li>The time/force graph</li>
 </ul>
+<h3 id="materialsset_slot">materials/set_slot<a class="headerlink" href="#materialsset_slot" title="Permanent link">&para;</a></h3>
+<p>This endpoint is available when a
+<a href="Config_Reference.html#materials">materials config section</a> is enabled.
+It sets the contents of a material slot. Only the parameters given are
+changed: <code>material</code> (a material id, or an empty string or null to empty
+the slot), <code>amount</code>, <code>container_height</code>, <code>comments</code>, <code>color</code> (a color
+like <code>#a1b2c3</code>, or null to use the material's color) and
+<code>date_inserted</code> (a Unix timestamp). Assigning a different material
+clears the slot's color and sets <code>date_inserted</code> to now. Emptying the
+slot ignores the other parameters. For example:
+<code>{"id": 123, "method": "materials/set_slot", "params": {"group": "sla",
+"slot": 2, "material": "gelma_10", "amount": 40}}</code>
+returns the slot as reported in the
+<a href="Status_Reference.html#materials">materials status</a> <code>slots</code> list.</p>
+<h3 id="materialsclear_slot">materials/clear_slot<a class="headerlink" href="#materialsclear_slot" title="Permanent link">&para;</a></h3>
+<p>This endpoint empties a material slot. For example:
+<code>{"id": 123, "method": "materials/clear_slot", "params": {"group": "sla",
+"slot": 2}}</code>
+returns the emptied slot.</p>
+<h3 id="materialsset_uncovered_duration">materials/set_uncovered_duration<a class="headerlink" href="#materialsset_uncovered_duration" title="Permanent link">&para;</a></h3>
+<p>This endpoint corrects how long the active slot of a group with
+<code>uncovered_mode: auto</code> has been uncovered. For example:
+<code>{"id": 123, "method": "materials/set_uncovered_duration", "params":
+{"group": "sla", "slot": 1, "seconds": 3600}}</code>
+returns the slot. It is an error for any other group or slot; for a
+group with <code>uncovered_mode: always</code>, set <code>date_inserted</code> with
+"materials/set_slot" instead.</p>
+<h3 id="materialsset_definition">materials/set_definition<a class="headerlink" href="#materialsset_definition" title="Permanent link">&para;</a></h3>
+<p>This endpoint creates a material definition, or overrides an existing
+one. <code>params</code> holds the definition's properties without the <code>params_</code>
+prefix. For example:
+<code>{"id": 123, "method": "materials/set_definition", "params": {"id":
+"gelma_5", "display_name": "GelMA 5%", "params": {"channel_type": "sla",
+"color": "#f0d878"}}}</code>
+returns <code>{"id": "gelma_5", "material": {...}}</code>, the material as reported
+in the <a href="Status_Reference.html#materials">materials status</a>.</p>
+<h3 id="materialsdelete_definition">materials/delete_definition<a class="headerlink" href="#materialsdelete_definition" title="Permanent link">&para;</a></h3>
+<p>This endpoint deletes a material definition created with
+"materials/set_definition". It is an error if a slot holds the material
+or if it has a <code>[material]</code> section in the config. For example:
+<code>{"id": 123, "method": "materials/delete_definition", "params": {"id":
+"gelma_5"}}</code>
+returns <code>{"deleted": "gelma_5"}</code>.</p>
 <h3 id="pause_resumecancel">pause_resume/cancel<a class="headerlink" href="#pause_resumecancel" title="Permanent link">&para;</a></h3>
 <p>This endpoint is similar to running the "PRINT_CANCEL" G-Code command.
 For example:
@@ -2911,6 +3137,37 @@ might return:
 <code>{"id": 123, "result": {"y": "open", "x": "open", "z": "TRIGGERED"}}</code></p>
 <p>As with the "gcode/script" endpoint, this endpoint only completes
 after any pending G-Code commands complete.</p>
+<h3 id="toolheadsset_state">toolheads/set_state<a class="headerlink" href="#toolheadsset_state" title="Permanent link">&para;</a></h3>
+<p>This endpoint is available when a
+<a href="Config_Reference.html#toolheads">toolheads config section</a> is enabled.
+It is similar to running the "TOOLHEAD_SET_STATE" G-Code command. For
+example:
+<code>{"id": 123, "method": "toolheads/set_state", "params": {"toolhead":
+"syringe", "state": "docked", "dock": 2}}</code>
+returns <code>{"toolhead": "syringe"}</code>.</p>
+<h3 id="toolheadsreorder_docks">toolheads/reorder_docks<a class="headerlink" href="#toolheadsreorder_docks" title="Permanent link">&para;</a></h3>
+<p>This endpoint is similar to running the "TOOLHEAD_REORDER_DOCKS" G-Code
+command, with <code>order</code> a list holding a toolhead name or null for each
+dock. For example:
+<code>{"id": 123, "method": "toolheads/reorder_docks", "params": {"order":
+["syringe", null, "nhk"]}}</code>
+returns <code>{"order": ["syringe", null, "nhk"]}</code>.</p>
+<h3 id="toolheadsconfirm_mount">toolheads/confirm_mount<a class="headerlink" href="#toolheadsconfirm_mount" title="Permanent link">&para;</a></h3>
+<p>While a "SELECT_MATERIAL" or "SELECT_TOOLHEAD" command waits for a
+toolhead to be mounted by hand (see <code>awaiting_mount</code> in the
+<a href="Status_Reference.html#toolheads">toolheads status</a>), this endpoint
+confirms that it has been, and the command continues. The optional
+<code>removed_state</code> (<code>unmounted</code>, <code>disconnected</code> or <code>docked</code>; the default is
+<code>unmounted</code>) and <code>removed_dock</code> say where the toolhead that had to come
+off went. For example:
+<code>{"id": 123, "method": "toolheads/confirm_mount", "params":
+{"removed_state": "docked", "removed_dock": 1}}</code>
+returns <code>{"confirmed": "syringe"}</code>.</p>
+<h3 id="toolheadscancel_mount">toolheads/cancel_mount<a class="headerlink" href="#toolheadscancel_mount" title="Permanent link">&para;</a></h3>
+<p>This endpoint cancels a wait for a toolhead to be mounted by hand, which
+makes the waiting command fail. For example:
+<code>{"id": 123, "method": "toolheads/cancel_mount"}</code>
+returns <code>{"cancelled": "syringe"}</code>.</p>
 
 
 

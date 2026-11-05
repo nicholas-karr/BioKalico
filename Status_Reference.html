@@ -629,6 +629,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Toolheads.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Toolheads
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1068,6 +1089,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#materials" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#mcu" class="md-nav__link">
     <span class="md-ellipsis">
       mcu
@@ -1260,6 +1290,15 @@
   <a href="#dual_carriage" class="md-nav__link">
     <span class="md-ellipsis">
       dual_carriage
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolheads" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads
     </span>
   </a>
   
@@ -2879,6 +2918,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#materials" class="md-nav__link">
+    <span class="md-ellipsis">
+      materials
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#mcu" class="md-nav__link">
     <span class="md-ellipsis">
       mcu
@@ -3071,6 +3119,15 @@
   <a href="#dual_carriage" class="md-nav__link">
     <span class="md-ellipsis">
       dual_carriage
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolheads" class="md-nav__link">
+    <span class="md-ellipsis">
+      toolheads
     </span>
   </a>
   
@@ -3573,6 +3630,36 @@ understands it).</li>
 <li><code>z_position_lower</code>: Last probe attempt just lower than the current height.</li>
 <li><code>z_position_upper</code>: Last probe attempt just greater than the current height.</li>
 </ul>
+<h2 id="materials">materials<a class="headerlink" href="#materials" title="Permanent link">&para;</a></h2>
+<p>The following information is available in the
+<a href="Config_Reference.html#materials">materials</a> object. Times are Unix
+timestamps in seconds.</p>
+<ul>
+<li><code>materials</code>: A dictionary of every material definition, keyed by
+  material id. Each entry holds <code>display_name</code>, <code>unit</code>, <code>source</code>
+  (<code>config</code> for a material with a <code>[material]</code> section, <code>user</code> for one
+  created in Mainsail) and every <code>params_&lt;name&gt;</code> option under <code>&lt;name&gt;</code>.</li>
+<li><code>slot_groups</code>: A dictionary of the slot groups, keyed by group id, in
+  config order. Each entry holds <code>display_name</code>, <code>count</code>, <code>params</code>,
+  <code>uncovered_mode</code>, <code>active_slot</code> (<code>None</code> when no slot is active) and
+  <code>slots</code>, a list with one entry per slot:<ul>
+<li><code>index</code>: The slot number, starting at 1.</li>
+<li><code>material</code>: The material id, or <code>None</code> for an empty slot.</li>
+<li><code>amount</code>: The remaining amount in the material's unit, or <code>None</code>
+  when not set.</li>
+<li><code>container_height</code>: The height entered for the container. For
+  reference only; it is never used to compute <code>amount</code>.</li>
+<li><code>comments</code>: Free text.</li>
+<li><code>color</code>: A color like <code>#a1b2c3</code> for this slot only, or <code>None</code> to use
+  the material's <code>color</code>. Cleared when the slot's material changes.</li>
+<li><code>date_inserted</code>, <code>last_used</code>: When the material was put in the slot
+  and when it was last used, or <code>None</code>.</li>
+<li><code>uncovered_since</code>: When the slot was last uncovered, derived from
+  the group's <code>uncovered_mode</code>, or <code>None</code> when it is covered or not
+  tracked.</li>
+</ul>
+</li>
+</ul>
 <h2 id="mcu">mcu<a class="headerlink" href="#mcu" title="Permanent link">&para;</a></h2>
 <p>The following information is available in
 <a href="Config_Reference.html#mcu">mcu</a> and
@@ -3830,12 +3917,48 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot</p>
 <li><code>carriage_1</code>: The mode of the carriage 1. Possible values are:
   "INACTIVE", "PRIMARY", "COPY", and "MIRROR".</li>
 </ul>
+<h2 id="toolheads">toolheads<a class="headerlink" href="#toolheads" title="Permanent link">&para;</a></h2>
+<p>The following information is available in the
+<a href="Config_Reference.html#toolheads">toolheads</a> object:</p>
+<ul>
+<li><code>dock_count</code>: The number of docks.</li>
+<li><code>docks</code>: A list with one entry per dock: the name of the toolhead in
+  that dock, or <code>None</code> when it is empty.</li>
+<li><code>order</code>: The toolhead names in config order.</li>
+<li><code>mounted</code>: The name of the mounted toolhead, or <code>None</code>.</li>
+<li><code>origin_set</code>: False while the mounted toolhead cannot be homed and
+  its origin has not been set with <code>TOOLHEAD_SET_ORIGIN</code>, otherwise True.</li>
+<li><code>toolheads</code>: A dictionary keyed by toolhead name. Each entry holds
+  <code>display_name</code>, <code>state</code> (<code>disconnected</code>, <code>unmounted</code>, <code>docked</code> or
+  <code>mounted</code>), <code>dock</code> (the dock it is in or returns to, or <code>None</code>),
+  <code>can_swap</code> (True when it has a <code>tool</code> and can be exchanged
+  automatically), <code>homeable</code> (False for a toolhead that is never homed),
+  <code>material_group</code>, <code>materials</code> (the material ids in its
+  slots), <code>mcu</code> and <code>follows_mcu</code>.</li>
+<li><code>selectors</code>: A dictionary keyed by selector name. Each entry holds
+  <code>material_group</code>.</li>
+<li><code>awaiting_mount</code>: While a command waits for a toolhead to be mounted by
+  hand, a dictionary with <code>toolhead</code> (the one wanted), <code>material</code> (the
+  material asked for, or <code>None</code>), <code>reason</code> (the wanted toolhead's state
+  when the wait began), <code>remove</code> (the toolhead to take off first, or
+  <code>None</code>) and <code>since</code> (a Unix timestamp). <code>None</code> otherwise.</li>
+<li><code>busy</code>: True while an automatic exchange or a <code>select_gcode</code> runs.</li>
+<li><code>last_error</code>: The error from the last failed automatic exchange, or an
+  empty string.</li>
+</ul>
 <h2 id="tools_calibrate">tools_calibrate<a class="headerlink" href="#tools_calibrate" title="Permanent link">&para;</a></h2>
 <p>The following information is available in the
 <a href="Config_Reference.html#tools_calibrate">tools_calibrate</a> object:</p>
 <ul>
-<li><code>sensor_location</code>: Once calibrated, the location of the sensor</li>
-<li><code>last_result</code>: The last tool calibration result</li>
+<li><code>last_result</code>: The last tool calibration result as <code>[x, y, z]</code>: the sensor
+  location after <code>TOOL_LOCATE_SENSOR</code>, or the tool offset relative to the
+  initial tool after <code>TOOL_CALIBRATE_TOOL_OFFSET</code>. <code>None</code> until one has run,
+  and cleared when the stepper motors are disabled.</li>
+<li><code>last_x_result</code>, <code>last_y_result</code>, <code>last_z_result</code>: The individual components
+  of <code>last_result</code>, or <code>None</code> when there is no result.</li>
+<li><code>last_probe_offset</code>: The <code>z_offset</code> computed by the last
+  <code>TOOL_CALIBRATE_PROBE_OFFSET</code>. <code>0.0</code> until one has run, and reset when the
+  stepper motors are disabled.</li>
 <li><code>calibration_probe_inactive</code>: Status of the calibration probe as of
   the last <code>TOOL_CALIBRATE_QUERY_PROBE</code></li>
 </ul>

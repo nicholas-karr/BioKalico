@@ -2244,6 +2244,60 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#materials" class="md-nav__link">
+    <span class="md-ellipsis">
+      [materials]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material_slots" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material_slots]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheads" class="md-nav__link">
+    <span class="md-ellipsis">
+      [toolheads]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolhead_unit" class="md-nav__link">
+    <span class="md-ellipsis">
+      [toolhead_unit]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material_selector" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material_selector]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#trad_rack" class="md-nav__link">
     <span class="md-ellipsis">
       [trad_rack]
@@ -2480,6 +2534,27 @@
   
   <span class="md-ellipsis">
     Dockable Probe
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Toolheads.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Toolheads
   </span>
   
 
@@ -5652,6 +5727,60 @@
   <a href="#image_display" class="md-nav__link">
     <span class="md-ellipsis">
       [image_display]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#materials" class="md-nav__link">
+    <span class="md-ellipsis">
+      [materials]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material_slots" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material_slots]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolheads" class="md-nav__link">
+    <span class="md-ellipsis">
+      [toolheads]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#toolhead_unit" class="md-nav__link">
+    <span class="md-ellipsis">
+      [toolhead_unit]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#material_selector" class="md-nav__link">
+    <span class="md-ellipsis">
+      [material_selector]
     </span>
   </a>
   
@@ -11580,12 +11709,15 @@ spread: 5
 #spread_x:
 #spread_y:
 #   X and Y travel distance around the probe
-#initial_spread:
 #initial_spread_x:
 #initial_spread_y:
-#   X and Y travel distance for the initial probe locating moves
+#   X and Y travel distance for the initial probe locating moves. The
+#   default is spread_x and spread_y respectively.
 lower_z: 1.0
 #   Distance to lower in Z for contact with the sides of the probe
+#lift_z: 1.0
+#   Distance to lift in Z before moving between probing positions. The
+#   default is 1.0mm.
 speed: 2
 #   The speed (in mm/sec) to retract between probes
 lift_speed: 4
@@ -11595,7 +11727,12 @@ final_lift_z: 6
 #   height variance between tools
 trigger_to_bottom_z: 0.25
 #   Offset from probe trigger to vertical motion bottoms out.
-#   decrease if the nozzle is too high, increase if too low.
+#   decrease if the nozzle is too high, increase if too low. Also added
+#   to the result of TOOL_CALIBRATE_PROBE_OFFSET.
+#probe: probe
+#   The name of the probe object (for example &quot;probe&quot; or
+#   &quot;tool_probe T0&quot;) whose z_offset is calibrated by
+#   TOOL_CALIBRATE_PROBE_OFFSET. The default is &quot;probe&quot;.
 #samples: 1
 #   The number of times to probe each point. The probed z-values will
 #   be averaged. The default is to probe 1 time.
@@ -11610,6 +11747,10 @@ trigger_to_bottom_z: 0.25
 #   samples. If this tolerance is exceeded then either an error is
 #   reported or the attempt is restarted (see
 #   samples_tolerance_retries). The default is 0.100mm.
+#samples_tolerance_retries: 0
+#   The number of times to retry probing a point if the samples exceed
+#   samples_tolerance. The default is 0, which reports an error
+#   instead of retrying.
 </code></pre></div>
 
 <h3 id="firmware_build">[firmware_build]<a class="headerlink" href="#firmware_build" title="Permanent link">&para;</a></h3>
@@ -11675,6 +11816,152 @@ and <a href="Status_Reference.html#image_display">status reference</a>.</p>
 #   &quot;connected&quot;. Find the right file with:
 #   cat /sys/class/drm/card*-*/status
 #   The default is not to check the file.
+</code></pre></div>
+
+<h3 id="materials">[materials]<a class="headerlink" href="#materials" title="Permanent link">&para;</a></h3>
+<p>Material inventory tracking. Material definitions come from
+<a href="#material">material</a> sections and slot groups from
+<a href="#material_slots">material_slots</a> sections. Slot contents, and materials
+created or edited in Mainsail, are saved to a state file and take
+priority over the config. This section must be present whenever any
+<code>[material]</code> or <code>[material_slots]</code> section exists. See also the
+<a href="G-Codes.html#materials">g-code commands</a>,
+<a href="Status_Reference.html#materials">status reference</a> and
+<a href="API_Server.html#materialsset_slot">API endpoints</a>.</p>
+<div class="highlight"><pre><span></span><code>[materials]
+#state_file: ~/printer_data/config/materials_state.cfg
+#   The file slot contents and runtime material definitions are saved
+#   to. The default is ~/printer_data/config/materials_state.cfg.
+</code></pre></div>
+
+<h3 id="material">[material]<a class="headerlink" href="#material" title="Permanent link">&para;</a></h3>
+<p>A material definition (one may define any number of sections with a
+"material" prefix). The name after "material" is the material id.
+Mainsail can override a definition from the config, but it can only be
+removed by deleting its section here.</p>
+<div class="highlight"><pre><span></span><code>[material my_material]
+#display_name:
+#   The name shown in Mainsail. The default is the material id.
+#params_color:
+#   The color shown for slots holding this material, as six hex digits
+#   without the leading &#39;#&#39; (for example 9e9e9e). The &#39;#&#39; is added
+#   back when the file is read.
+#params_slicer_token:
+#   The name the slicer uses for this material. SELECT_MATERIAL and
+#   TOOLHEADS_PREFLIGHT accept it in place of the material id.
+#params_channel_type:
+#   Set to fff for filament. Amounts of a material with channel type
+#   fff are in grams, and of any other material in mL.
+#params_unit:
+#   The unit amounts of this material are in. The default is chosen
+#   from params_channel_type.
+#params_&lt;name&gt;:
+#   Any other option starting with &quot;params_&quot; is stored as a string and
+#   reported in the materials status object without the prefix.
+</code></pre></div>
+
+<h3 id="material_slots">[material_slots]<a class="headerlink" href="#material_slots" title="Permanent link">&para;</a></h3>
+<p>A group of material slots, such as the vats of an SLA turntable or the
+reservoir of a toolhead (one may define any number of sections with a
+"material_slots" prefix). The name after "material_slots" is the group
+id. A group can belong to at most one
+<a href="#toolhead_unit">toolhead_unit</a> or <a href="#material_selector">material_selector</a>.
+The config only says how many slots a group has. What each slot holds
+is set in Mainsail and saved to the materials state file.</p>
+<div class="highlight"><pre><span></span><code>[material_slots my_group]
+count:
+#   The number of slots in the group. This parameter must be provided.
+#display_name:
+#   The name shown in Mainsail. The default is the group id.
+#active_slot:
+#   The slot in use until MATERIAL_CONSUME, MATERIAL_MARK_USED or a
+#   material_selector makes another one active. The default is no
+#   active slot.
+#uncovered_mode: off
+#   How long each slot has been uncovered (exposed to air and light) is
+#   tracked. Choices are &quot;off&quot; (not tracked), &quot;auto&quot; (only the active
+#   slot is uncovered, since it became active; for vats whose cover is
+#   removed only while in use) and &quot;always&quot; (every occupied slot is
+#   uncovered since its material was inserted; for machines without
+#   covers). The default is off.
+#params_&lt;name&gt;:
+#   Options starting with &quot;params_&quot; are stored as strings and shown on
+#   the group in Mainsail. params_color is checked as for [material].
+</code></pre></div>
+
+<h3 id="toolheads">[toolheads]<a class="headerlink" href="#toolheads" title="Permanent link">&para;</a></h3>
+<p>Toolhead registry for printers with more than one toolhead. Tracks where
+each <a href="#toolhead_unit">toolhead_unit</a> is: disconnected, unmounted
+(connected, set aside), docked, or mounted on the carriage. At most one
+toolhead is mounted and each dock holds at most one toolhead. Each
+toolhead owns the materials in its slot group, and the
+<a href="G-Codes.html#select_material">SELECT_MATERIAL</a> command gets a material into
+place by exchanging toolheads or by running a
+<a href="#material_selector">material_selector</a>. A <a href="#materials">materials</a> section
+is required if any toolhead or selector sets material_group. See the
+<a href="Toolheads.html">toolheads guide</a> for how to set this up, and also the
+<a href="Status_Reference.html#toolheads">status reference</a> and
+<a href="API_Server.html#toolheadsset_state">API endpoints</a>.</p>
+<div class="highlight"><pre><span></span><code>[toolheads]
+#dock_count: 0
+#   The number of docks. The default is 0 (toolheads are only mounted
+#   or set aside by hand).
+#state_file: ~/printer_data/config/toolheads_state.cfg
+#   The file toolhead positions are saved to. The default is
+#   ~/printer_data/config/toolheads_state.cfg.
+</code></pre></div>
+
+<h3 id="toolhead_unit">[toolhead_unit]<a class="headerlink" href="#toolhead_unit" title="Permanent link">&para;</a></h3>
+<p>A physical toolhead (one may define any number of sections with a
+"toolhead_unit" prefix). Requires a <a href="#toolheads">toolheads</a> section.</p>
+<div class="highlight"><pre><span></span><code>[toolhead_unit my_toolhead]
+#display_name:
+#   The name shown in Mainsail and in prompts. The default is the
+#   section name.
+#material_group:
+#   The [material_slots] group this toolhead carries. The materials in
+#   its slots are the ones the toolhead owns. The default is no group.
+#tool:
+#   The name of a [tool] section (see docs/Toolheads.md) whose
+#   pickup_gcode and dropoff_gcode move this toolhead. Those templates
+#   can read the dock involved as tool.dock (0 when unknown). A docked
+#   toolhead with a tool is exchanged automatically; any other toolhead
+#   is mounted by hand while the printer waits. The default is no tool.
+#mcu:
+#   The name of an [mcu] section with is_non_critical set to True.
+#   Unplugging that board marks the toolhead disconnected, and plugging
+#   it back in restores its previous state. The default is not to
+#   follow a board.
+#initial_state: unmounted
+#   Where the toolhead is before it has been placed: disconnected,
+#   unmounted, docked or mounted. Only used until the state file holds
+#   a record of the toolhead. The default is unmounted.
+#initial_dock:
+#   The dock (1 to dock_count) of a toolhead that starts docked, or the
+#   dock a mounted toolhead returns to. Required when initial_state is
+#   docked, and not allowed when it is disconnected or unmounted.
+#homeable: True
+#   Set to False for a toolhead that must never be homed. While it is
+#   mounted G28 does not move anything (see TOOLHEAD_SET_ORIGIN). The
+#   default is True.
+</code></pre></div>
+
+<h3 id="material_selector">[material_selector]<a class="headerlink" href="#material_selector" title="Permanent link">&para;</a></h3>
+<p>A slot group whose material is switched by running a macro instead of
+exchanging toolheads, such as an SLA vat turntable (one may define any
+number of sections with a "material_selector" prefix). Requires a
+<a href="#toolheads">toolheads</a> section and a <a href="#materials">materials</a> section.</p>
+<div class="highlight"><pre><span></span><code>[material_selector my_selector]
+material_group:
+#   The [material_slots] group this selector switches between. This
+#   parameter must be provided.
+select_gcode:
+#   A list of G-Code commands to execute to bring a slot into use. The
+#   template can read &quot;group&quot; (the group id), &quot;slot&quot; (the slot number,
+#   starting at 1), &quot;index&quot; (slot minus 1) and &quot;material&quot; (the material
+#   id). It is not run when the slot is already the active one. See
+#   docs/Command_Templates.md for G-Code format. This parameter must be
+#   provided.
 </code></pre></div>
 
 <h3 id="trad_rack">[trad_rack]<a class="headerlink" href="#trad_rack" title="Permanent link">&para;</a></h3>
