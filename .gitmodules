@@ -8,3 +8,6 @@
 	path = deps/crowsnest
 	url = https://github.com/nicholas-karr/crowsnest.git
 	branch = v5
+[submodule "deps/ad246s-mscope"]
+	path = deps/ad246s-mscope
+	url = https://github.com/nicholas-karr/ad246s-mscope.git
