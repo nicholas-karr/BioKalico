@@ -15,6 +15,7 @@ def _bare_image_display(auth_token):
     obj._standby_timer = None
     obj._standby_waketime = 0.0
     obj._idled_off = False
+    obj._status_cache = {}
     return obj
 
 
@@ -480,3 +481,14 @@ def test_fire_and_forget_commands_never_expire():
     obj = _bare_image_display("")
     obj._send_fire_and_forget({"type": "PROJECTOR_OFF"})
     assert obj._cmd_queue.get_nowait()[3] == float("inf")
+
+
+def test_idle_off_does_not_leave_a_ready_status_behind():
+    obj = _abortable_display()
+    obj._status_cache = {"display_ready": True, "projector_on": True}
+    obj._arm_standby()
+    cb, waketime = _armed_wake(obj)
+
+    cb(waketime)
+    assert obj._status_cache["display_ready"] is False
+    assert obj._status_cache["projector_on"] is False

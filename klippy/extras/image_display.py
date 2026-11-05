@@ -585,6 +585,7 @@ class ImageDisplay:
     def cmd_PROJECTOR_OFF(self, gcmd):
         self._idled_off = False
         resp = self._send({"type": "PROJECTOR_OFF"})
+        self._forget_projector_ready()
         self._require_ok(gcmd, resp)
         link_error = resp.get("projector_link_error")
         if link_error:
@@ -749,7 +750,14 @@ class ImageDisplay:
         self._standby_waketime = 0.0
         self._idled_off = True
         self._send_fire_and_forget({"type": "PROJECTOR_OFF"})
+        self._forget_projector_ready()
         return self.printer.get_reactor().NEVER
+
+    def _forget_projector_ready(self):
+        # The cache can be seconds old; after an off it must not say ready.
+        self._status_cache = dict(
+            self._status_cache, display_ready=False, projector_on=False
+        )
 
     def _status_poll_once(self) -> None:
         try:
