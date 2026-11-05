@@ -1,4 +1,6 @@
 import queue
+import socket
+import threading
 
 import pytest
 
@@ -8,6 +10,7 @@ from klippy.extras.image_display import _STANDBY_DELAY, ImageDisplay
 def _bare_image_display(auth_token):
     obj = ImageDisplay.__new__(ImageDisplay)
     obj.auth_token = auth_token
+    obj.timeout = 5.0
     obj._cmd_queue = queue.Queue()
     obj._standby_timer = None
     obj._standby_waketime = 0.0
@@ -21,7 +24,7 @@ def test_send_fire_and_forget_attaches_auth_token():
     obj = _bare_image_display("secret-token")
     obj._send_fire_and_forget({"type": "PROJECTOR_ON"})
 
-    cmd, result_q = obj._cmd_queue.get_nowait()
+    cmd, result_q, _, _ = obj._cmd_queue.get_nowait()
     assert cmd == {"type": "PROJECTOR_ON", "auth_token": "secret-token"}
     assert isinstance(result_q, queue.Queue)
 
@@ -30,7 +33,7 @@ def test_send_fire_and_forget_omits_token_when_unset():
     obj = _bare_image_display("")
     obj._send_fire_and_forget({"type": "PROJECTOR_OFF"})
 
-    cmd, _ = obj._cmd_queue.get_nowait()
+    cmd = obj._cmd_queue.get_nowait()[0]
     assert cmd == {"type": "PROJECTOR_OFF"}
 
 
@@ -109,7 +112,7 @@ def test_aborted_print_queues_clear_before_returning():
     obj = _abortable_display()
     obj._on_print_aborted()
 
-    cmd, _ = obj._cmd_queue.get_nowait()
+    cmd = obj._cmd_queue.get_nowait()[0]
     assert cmd == {"type": "CLEAR"}
     assert len(obj.printer.reactor.callbacks) == 1
 
@@ -126,14 +129,14 @@ def test_aborted_print_drops_the_pause_reason():
 def test_aborted_print_clear_retries_then_succeeds():
     obj = _abortable_display()
     obj._on_print_aborted()
-    _, first_q = obj._cmd_queue.get_nowait()
+    first_q = obj._cmd_queue.get_nowait()[1]
     first_q.put(("err", OSError("boom")))
 
     # Answer the retry as soon as the confirm loop queues it.
     class _Reply(queue.Queue):
         def put(self, item, *a, **k):
             super().put(item, *a, **k)
-            cmd, result_q = self.get_nowait()
+            cmd, result_q, _, _ = self.get_nowait()
             assert cmd == {"type": "CLEAR"}
             result_q.put(("ok", {"status": "success"}))
 
@@ -145,12 +148,12 @@ def test_aborted_print_clear_retries_then_succeeds():
 def test_aborted_print_clear_warns_when_all_attempts_fail():
     obj = _abortable_display()
     obj._on_print_aborted()
-    _, first_q = obj._cmd_queue.get_nowait()
+    first_q = obj._cmd_queue.get_nowait()[1]
     first_q.put(("ok", {"status": "error", "message": "no window"}))
 
     class _Fail(queue.Queue):
         def put(self, item, *a, **k):
-            _, result_q = item
+            result_q = item[1]
             result_q.put(("err", OSError("down")))
 
     obj._cmd_queue = _Fail()
@@ -188,7 +191,7 @@ def test_idle_expiry_sends_projector_off_once():
     cb, waketime = _armed_wake(obj)
 
     assert cb(waketime) == obj.printer.reactor.NEVER
-    cmd, _ = obj._cmd_queue.get_nowait()
+    cmd = obj._cmd_queue.get_nowait()[0]
     assert cmd == {"type": "PROJECTOR_OFF"}
     assert obj._standby_timer is None
 
@@ -211,7 +214,7 @@ def test_idle_expiry_turns_off_while_print_is_paused():
     cb, waketime = _armed_wake(obj)
 
     assert cb(waketime) == obj.printer.reactor.NEVER
-    cmd, _ = obj._cmd_queue.get_nowait()
+    cmd = obj._cmd_queue.get_nowait()[0]
     assert cmd == {"type": "PROJECTOR_OFF"}
     assert obj._idled_off
 
@@ -354,7 +357,7 @@ def test_background_start_returns_at_once_and_keeps_kicking_until_ready():
 
     reactor.now = 1.0
     assert cb(1.0) == 1.0 + 5.0
-    cmd, _ = obj._cmd_queue.get_nowait()
+    cmd = obj._cmd_queue.get_nowait()[0]
     assert cmd == {"type": "PROJECTOR_ON"}
 
     # Not due again yet: no second kick.
@@ -403,3 +406,77 @@ def test_waiting_start_is_still_the_default():
     obj.cmd_PROJECTOR_ON(_WaitGcmd(1))
     assert len(called) == 1
     assert not obj._warmup_active
+
+
+class _FakeSock:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.sent = []
+        self.timeouts = []
+
+    def settimeout(self, value):
+        self.timeouts.append(value)
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+    def recv(self, size):
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def close(self):
+        pass
+
+
+def _worker_display(sock):
+    obj = _bare_image_display("")
+    obj._rbuf = b""
+    obj._sock = sock
+    obj._sock_lock = threading.Lock()
+    obj._last_reconnect_warn = 0.0
+    obj._connect = lambda: pytest.fail("worker reconnected")
+    return obj
+
+
+def _run_worker(obj):
+    obj._cmd_queue.put(None)
+    obj._worker_loop()
+
+
+def test_worker_uses_the_per_command_timeout():
+    sock = _FakeSock([b'{"status": "success"}\n'])
+    obj = _worker_display(sock)
+    result_q = queue.Queue()
+    obj._enqueue({"type": "LOAD"}, result_q, 120.0)
+    _run_worker(obj)
+    assert sock.timeouts == [120.0]
+    assert result_q.get_nowait() == ("ok", {"status": "success"})
+
+
+def test_worker_does_not_resend_after_a_reply_timeout():
+    sock = _FakeSock([socket.timeout("timed out")])
+    obj = _worker_display(sock)
+    result_q = queue.Queue()
+    obj._enqueue({"type": "LOAD"}, result_q, 5.0)
+    _run_worker(obj)
+    assert len(sock.sent) == 1
+    status, error = result_q.get_nowait()
+    assert status == "err" and isinstance(error, socket.timeout)
+
+
+def test_worker_skips_a_command_whose_caller_gave_up():
+    sock = _FakeSock([])
+    obj = _worker_display(sock)
+    result_q = queue.Queue()
+    obj._cmd_queue.put(({"type": "DISPLAY_IMAGE"}, result_q, 5.0, 0.0))
+    _run_worker(obj)
+    assert sock.sent == []
+    assert result_q.get_nowait()[0] == "err"
+
+
+def test_fire_and_forget_commands_never_expire():
+    obj = _bare_image_display("")
+    obj._send_fire_and_forget({"type": "PROJECTOR_OFF"})
+    assert obj._cmd_queue.get_nowait()[3] == float("inf")

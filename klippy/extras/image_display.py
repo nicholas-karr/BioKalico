@@ -227,14 +227,26 @@ class ImageDisplay:
             item = self._cmd_queue.get()
             if item is None:
                 break
-            cmd, result_q = item
+            cmd, result_q, timeout, deadline = item
+            if time.monotonic() > deadline:
+                # The caller gave up already; running a stale command later
+                # (a DISPLAY_IMAGE after the printer moved on) would be wrong.
+                result_q.put(("err", TimeoutError("command expired in queue")))
+                continue
             for attempt in range(2):
                 try:
                     if self._sock is None:
                         self._connect()
+                    self._sock.settimeout(timeout)
                     self._sock.sendall(json.dumps(cmd).encode() + b"\n")
                     response = json.loads(self._recvline())
                     result_q.put(("ok", response))
+                    break
+                except socket.timeout as e:
+                    # The server may still be running the command; sending it
+                    # again would run it twice.
+                    self._close()
+                    result_q.put(("err", e))
                     break
                 except Exception as e:
                     self._close()
@@ -245,6 +257,13 @@ class ImageDisplay:
                         self._schedule_reconnect_warning()
                         continue
                     result_q.put(("err", e))
+
+    def _enqueue(self, cmd, result_q, timeout=None, expires=True):
+        t = timeout if timeout is not None else self.timeout
+        # A caller that waits stops after t + 1 s; the worker must not run
+        # the command after that.
+        deadline = time.monotonic() + t + 1.0 if expires else float("inf")
+        self._cmd_queue.put((cmd, result_q, t, deadline))
 
     def _pause(self, reactor, eventtime):
         """reactor.pause() wrapper that returns None if the reactor raises."""
@@ -261,11 +280,11 @@ class ImageDisplay:
         if self.auth_token:
             cmd = dict(cmd, auth_token=self.auth_token)
         result_q = queue.Queue()
-        self._cmd_queue.put((cmd, result_q))
+        t = timeout if timeout is not None else self.timeout
+        self._enqueue(cmd, result_q, t)
 
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
-        t = timeout if timeout is not None else self.timeout
         deadline = eventtime + t + 1.0
 
         while eventtime is not None and eventtime < deadline:
@@ -294,7 +313,7 @@ class ImageDisplay:
         """
         if self.auth_token:
             cmd = dict(cmd, auth_token=self.auth_token)
-        self._cmd_queue.put((cmd, queue.Queue()))
+        self._enqueue(cmd, queue.Queue(), expires=False)
 
     def _require_ok(self, gcmd, response: dict):
         if response.get("status") != "success":
@@ -816,7 +835,7 @@ class ImageDisplay:
         if self.auth_token:
             cmd["auth_token"] = self.auth_token
         result_q = queue.Queue()
-        self._cmd_queue.put((cmd, result_q))
+        self._enqueue(cmd, result_q)
         return result_q
 
     def _confirm_clear(self, result_q):
