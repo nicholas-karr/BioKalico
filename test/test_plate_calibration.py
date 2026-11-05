@@ -53,10 +53,21 @@ class FakeProjector:
 
 class FakeTool:
     def __init__(self):
-        self.params = {}
+        self.params = {
+            "gcode_x_offset": 1.5,
+            "gcode_y_offset": -2.0,
+            "gcode_z_offset": 0.25,
+        }
+        self.original_params = {}
 
     def set_parameter(self, name, value):
+        if name not in self.original_params:
+            self.original_params[name] = self.params[name]
         self.params[name] = value
+
+    def reset_parameter(self, name):
+        if name in self.original_params:
+            self.params[name] = self.original_params[name]
 
 
 class FakeGcodeMove:
@@ -158,7 +169,8 @@ def test_focus_saves_sla_z_and_gives_it_to_the_tool(tmp_path):
 
     again = new_env(tmp_path)
     assert again.tool.params["gcode_z_offset"] == 30.0
-    assert again.tool.params["gcode_x_offset"] == 0.0
+    assert again.tool.params["gcode_x_offset"] == 1.5
+    assert again.tool.params["gcode_y_offset"] == -2.0
 
 
 def test_focus_needs_z_homed(tmp_path):
@@ -194,7 +206,7 @@ def test_clear_tool_resets_its_offset(tmp_path):
     env.call("CAL_PROJECTOR_FOCUS_SAVE")
     env.call("CAL_TOOL_CLEAR TOOL=sla")
     assert env.cal.get_status()["offsets"] == {}
-    assert env.tool.params["gcode_z_offset"] == 0.0
+    assert env.tool.params["gcode_z_offset"] == 0.25
 
 
 def printing_env(tmp_path):
@@ -261,6 +273,26 @@ def test_homing_is_done_in_machine_coordinates(tmp_path):
     # still has to take it off.
     env.gcode_move.offset = [0.0, 0.0, 30.0]
     env.fire("print_stats:complete_printing")
+    assert env.gcode_move.offset == [0.0, 0.0, 0.0]
+
+
+def test_homing_inside_a_running_print_restores_the_origin(tmp_path):
+    env = printing_env(tmp_path)
+    env.fire("toolheads:selected", "sla")
+    saved = list(env.gcode_move.offset)
+    assert saved != [0.0, 0.0, 0.0]
+    env.fire("homing:home_rails_begin", None, [])
+    assert env.gcode_move.offset == [0.0, 0.0, 0.0]
+    env.fire("homing:home_rails_end", None, [])
+    assert env.gcode_move.offset == saved
+
+
+def test_homing_in_a_paused_print_leaves_the_restore_to_resume(tmp_path):
+    env = printing_env(tmp_path)
+    env.fire("toolheads:selected", "sla")
+    env.fire("homing:home_rails_begin", None, [])
+    env.print_stats.state = "paused"
+    env.fire("homing:home_rails_end", None, [])
     assert env.gcode_move.offset == [0.0, 0.0, 0.0]
 
 

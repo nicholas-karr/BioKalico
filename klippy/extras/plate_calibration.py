@@ -66,6 +66,9 @@ class PlateCalibration:
         self.printer.register_event_handler(
             "homing:home_rails_begin", self._handle_home_rails_begin
         )
+        self.printer.register_event_handler(
+            "homing:home_rails_end", self._handle_home_rails_end
+        )
         for state in ("complete", "error", "cancelled"):
             self.printer.register_event_handler(
                 "print_stats:%s_printing" % (state,), self._release_origin
@@ -134,10 +137,11 @@ class PlateCalibration:
             return
         values = self.offsets.get(name)
         for axis in AXES:
-            tool.set_parameter(
-                "gcode_%s_offset" % axis,
-                values[axis] if values and axis in values else 0.0,
-            )
+            param = "gcode_%s_offset" % axis
+            if values and axis in values:
+                tool.set_parameter(param, values[axis])
+            else:
+                tool.reset_parameter(param)
 
     # G-code origin
 
@@ -177,6 +181,17 @@ class PlateCalibration:
         # still has to come off when that print ends.
         if self.origin_tool is not None:
             self._set_gcode_offset({})
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        # A G28 inside a running print must not leave the rest of it at
+        # machine coordinates. A paused print gets its offset back from RESUME.
+        if self.origin_tool is None:
+            return
+        if self.print_stats is None or self.print_stats.state != "printing":
+            return
+        values = self.offsets.get(self.origin_tool)
+        if values:
+            self._set_gcode_offset(values)
 
     def _release_origin(self):
         if self.origin_tool is None:
